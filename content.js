@@ -7,34 +7,40 @@
 (() => {
   'use strict';
 
-  // Icon names WhatsApp uses for the play button of voice notes / audio
-  // messages (they have changed over time, so match several).
-  const PLAY_ICON_SELECTOR = [
-    'span[data-icon="audio-play"]',
-    'span[data-icon="ptt-play"]',
-    'span[data-icon="audio-play-outline"]',
-  ].join(', ');
-  const PAUSE_ICON_SELECTOR =
-    'span[data-icon="audio-pause"], span[data-icon="ptt-pause"]';
+  const VERSION = '1.1.0';
 
-  const MESSAGE_SELECTOR = '.message-in, .message-out, [data-id]';
+  const log = (...args) =>
+    console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
+
+  // WhatsApp marks its icons with data-icon attributes whose names have
+  // changed across releases (audio-play, ptt-play, mic-...). Match broadly on
+  // anything audio/ptt related, and fall back to aria-labels on buttons.
+  const ICON_NAME_RE = /audio|ptt/i;
+  const ARIA_VOICE_RE = /voice message|audio message|sprachnachricht|mensaje de voz|message vocal/i;
+
   const STORAGE_PREFIX = 'transcript:';
   const MAX_AUDIO_WAIT_MS = 8000;
+  const SCAN_INTERVAL_MS = 1500;
 
-  const pending = new Map(); // requestId -> UI elements
+  const pending = new Map(); // requestId -> { bubble, ui, lastActivity }
   let requestCounter = 0;
+  let attachedCount = 0;
 
   // ---------------------------------------------------------------- helpers
 
   function findMessageBubble(el) {
-    let node = el.closest(MESSAGE_SELECTOR);
-    // Prefer an ancestor that carries the stable message id.
-    const withId = el.closest('[data-id]');
-    return withId || node;
+    return (
+      el.closest('[data-id]') ||
+      el.closest('.message-in, .message-out') ||
+      el.closest('div[role="row"]')
+    );
   }
 
   function messageKey(bubble) {
-    const id = bubble && bubble.getAttribute('data-id');
+    const holder = bubble.hasAttribute('data-id')
+      ? bubble
+      : bubble.querySelector('[data-id]');
+    const id = holder && holder.getAttribute('data-id');
     return id ? STORAGE_PREFIX + id : null;
   }
 
@@ -67,6 +73,38 @@
     });
   }
 
+  // ------------------------------------------------------- message finding
+
+  // Returns the element (icon or button) identifying a voice/audio message
+  // control inside `scope`.
+  function findVoiceControls(scope) {
+    const controls = [];
+    for (const el of scope.querySelectorAll('span[data-icon]')) {
+      if (ICON_NAME_RE.test(el.getAttribute('data-icon') || '')) controls.push(el);
+    }
+    for (const btn of scope.querySelectorAll('button[aria-label]')) {
+      if (ARIA_VOICE_RE.test(btn.getAttribute('aria-label') || '')) controls.push(btn);
+    }
+    return controls;
+  }
+
+  function findButtonByIcon(bubble, iconNameRe, ariaRe) {
+    for (const el of bubble.querySelectorAll('span[data-icon]')) {
+      if (iconNameRe.test(el.getAttribute('data-icon') || '')) {
+        return el.closest('button') || el.parentElement;
+      }
+    }
+    for (const btn of bubble.querySelectorAll('button[aria-label]')) {
+      if (ariaRe.test(btn.getAttribute('aria-label') || '')) return btn;
+    }
+    return null;
+  }
+
+  const findPlayButton = (bubble) =>
+    findButtonByIcon(bubble, /play/i, /^play\b|play voice|play audio/i);
+  const findPauseButton = (bubble) =>
+    findButtonByIcon(bubble, /pause/i, /^pause\b|pause voice|pause audio/i);
+
   // ------------------------------------------------------ audio acquisition
 
   // Returns the <audio> element that belongs to this voice message, loading
@@ -75,8 +113,7 @@
     const existing = bubble.querySelector('audio');
     if (existing && existing.src) return existing;
 
-    const playIcon = bubble.querySelector(PLAY_ICON_SELECTOR);
-    const playButton = playIcon && (playIcon.closest('button') || playIcon.parentElement);
+    const playButton = findPlayButton(bubble);
     if (!playButton) return null;
 
     // WhatsApp only creates/loads the <audio> element when playback starts.
@@ -107,9 +144,7 @@
 
       // Stop playback again: prefer WhatsApp's own pause button so its UI
       // state stays consistent, fall back to pausing the element directly.
-      const pauseIcon = bubble.querySelector(PAUSE_ICON_SELECTOR);
-      const pauseButton =
-        pauseIcon && (pauseIcon.closest('button') || pauseIcon.parentElement);
+      const pauseButton = findPauseButton(bubble);
       if (pauseButton) pauseButton.click();
       if (audio) {
         try {
@@ -152,7 +187,8 @@
     button.className = 'wvt-button';
     button.type = 'button';
     button.textContent = 'Transcribe';
-    button.title = 'Transcribe this voice message locally (audio never leaves your browser)';
+    button.title =
+      'Transcribe this voice message locally (audio never leaves your browser)';
 
     const output = document.createElement('div');
     output.className = 'wvt-output';
@@ -212,10 +248,11 @@
 
   // --------------------------------------------------------------- scanning
 
-  async function attachToVoiceMessage(icon) {
-    const bubble = findMessageBubble(icon);
+  async function attachToVoiceMessage(control) {
+    const bubble = findMessageBubble(control);
     if (!bubble || bubble.dataset.wvtAttached) return;
     bubble.dataset.wvtAttached = '1';
+    attachedCount++;
 
     const ui = createUi(bubble);
 
@@ -236,14 +273,13 @@
     ui.button.addEventListener('click', () => onTranscribeClick(bubble, ui));
   }
 
-  function scan(root) {
-    if (!(root instanceof Element) && root !== document) return;
-    const scope = root instanceof Element ? root : document;
-    if (scope instanceof Element && scope.matches(PLAY_ICON_SELECTOR)) {
-      attachToVoiceMessage(scope);
+  function scan() {
+    const before = attachedCount;
+    for (const control of findVoiceControls(document)) {
+      attachToVoiceMessage(control);
     }
-    for (const icon of scope.querySelectorAll(PLAY_ICON_SELECTOR)) {
-      attachToVoiceMessage(icon);
+    if (attachedCount !== before) {
+      log(`attached to ${attachedCount - before} new voice message(s)`);
     }
   }
 
@@ -289,17 +325,39 @@
 
   // ------------------------------------------------------------------ init
 
-  const observer = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node instanceof Element) scan(node);
-      }
-    }
-  });
-
   function start() {
-    scan(document);
-    observer.observe(document.body, { childList: true, subtree: true });
+    log(`content script active (v${VERSION})`);
+
+    // WhatsApp renders its UI long after page load and uses a virtualized
+    // message list, so re-scan periodically rather than relying on load-time
+    // DOM state.
+    scan();
+    setInterval(scan, SCAN_INTERVAL_MS);
+
+    // Diagnostics: if nothing was found after a while, print what icons the
+    // page actually uses so selector updates are easy.
+    setTimeout(() => {
+      if (attachedCount === 0) {
+        const icons = [
+          ...new Set(
+            [...document.querySelectorAll('[data-icon]')].map((el) =>
+              el.getAttribute('data-icon')
+            )
+          ),
+        ].sort();
+        log(
+          'no voice messages detected yet. If a chat with voice messages is open, ' +
+            'please report these data-icon values found on the page:',
+          JSON.stringify(icons)
+        );
+        log(
+          'audio elements on page:',
+          document.querySelectorAll('audio').length,
+          '| message rows:',
+          document.querySelectorAll('.message-in, .message-out, [data-id]').length
+        );
+      }
+    }, 20000);
   }
 
   if (document.readyState === 'loading') {
