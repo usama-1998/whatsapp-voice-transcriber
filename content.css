@@ -1,9 +1,24 @@
 /* UI injected into WhatsApp Web chat bubbles by the voice transcriber. */
 
+/* The wrap sits under the voice-message bubble. Flex alignment puts it on
+   the correct chat side even when the container spans the full row width. */
 .wvt-wrap {
-  margin-top: 2px;
-  padding: 0 4px 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
   font-family: inherit;
+}
+
+.wvt-wrap.wvt-in {
+  justify-content: flex-start;
+}
+
+.wvt-wrap.wvt-out {
+  /* row-reverse: main-start is the right edge, so flex-start packs right.
+     The icon sits at the outer (right) edge with the transcript beside it. */
+  flex-direction: row-reverse;
+  justify-content: flex-start;
 }
 
 /* Small icon button, styled like WhatsApp's own subtle inline icons. */
@@ -11,30 +26,33 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 50%;
   background: transparent;
   color: #667781;
   cursor: pointer;
-  opacity: 0.65;
+  opacity: 0.45;
   flex: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.wvt-btn.wvt-inline {
-  align-self: center;
-  margin-left: 2px;
+/* Brighten when hovering the message (WhatsApp-style hover affordance). */
+[data-wvt-attached]:hover .wvt-btn,
+.wvt-btn:hover,
+.wvt-btn:focus-visible {
+  opacity: 1;
 }
 
 .wvt-btn:hover:not(:disabled) {
-  opacity: 1;
   background: rgba(11, 20, 26, 0.08);
 }
 
 .wvt-btn:disabled {
   cursor: default;
+  opacity: 0.8;
 }
 
 /* Spinner while capturing / transcribing. */
@@ -44,8 +62,8 @@
 
 .wvt-btn.wvt-working::after {
   content: '';
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   border: 2px solid currentColor;
   border-top-color: transparent;
@@ -58,17 +76,25 @@
   }
 }
 
+/* Transcript bubble: mirrors a chat bubble, sized to its content. */
 .wvt-output {
-  margin-top: 4px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.06);
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(11, 20, 26, 0.07);
   color: inherit;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
-  max-width: 420px;
+  max-width: min(420px, 78%);
+}
+
+.wvt-wrap.wvt-in .wvt-output {
+  border-top-left-radius: 2px;
+}
+
+.wvt-wrap.wvt-out .wvt-output {
+  border-top-right-radius: 2px;
 }
 
 .wvt-output.wvt-status {
@@ -95,5 +121,11 @@ body.dark .wvt-btn:hover:not(:disabled),
 
 body.dark .wvt-output,
 .dark .wvt-output {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+body.dark .wvt-output.wvt-error,
+.dark .wvt-output.wvt-error {
+  background: rgba(240, 90, 90, 0.16);
+  color: #f28b82;
 }

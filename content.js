@@ -8,7 +8,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
 
   const log = (...args) =>
     console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
@@ -172,7 +172,36 @@
 
   // ------------------------------------------------------------------- UI
 
-  function createUi(bubble) {
+  // Is this one of the user's own (outgoing) messages? Try WhatsApp's
+  // long-standing classes first, then fall back to geometry (outgoing
+  // bubbles sit in the right half of the chat panel).
+  function isOutgoingMessage(bubble, refEl) {
+    if (
+      bubble.matches('.message-out') ||
+      bubble.closest('.message-out') ||
+      bubble.querySelector('.message-out')
+    ) {
+      return true;
+    }
+    if (
+      bubble.matches('.message-in') ||
+      bubble.closest('.message-in') ||
+      bubble.querySelector('.message-in')
+    ) {
+      return false;
+    }
+    const target = refEl || bubble;
+    const rect = target.getBoundingClientRect();
+    const panel = (bubble.closest('#main') || document.body).getBoundingClientRect();
+    return (rect.left + rect.right) / 2 > panel.left + panel.width / 2;
+  }
+
+  function createUi(bubble, control) {
+    const outgoing = isOutgoingMessage(bubble, control);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'wvt-wrap ' + (outgoing ? 'wvt-out' : 'wvt-in');
+
     const button = document.createElement('button');
     button.className = 'wvt-btn';
     button.type = 'button';
@@ -180,25 +209,20 @@
     button.title = 'Transcribe locally (audio never leaves your browser)';
     button.innerHTML = ICON_SVG;
 
-    // Place the icon inline next to the voice player controls when possible,
-    // like WhatsApp's own hover icons; otherwise fall back to below the
-    // bubble content.
-    const playerButton = findPlayButton(bubble) || findPauseButton(bubble);
-    const playerRow = playerButton && playerButton.parentElement;
-    if (playerRow) {
-      button.classList.add('wvt-inline');
-      playerRow.appendChild(button);
-    }
-
-    const wrap = document.createElement('div');
-    wrap.className = 'wvt-wrap';
-    if (!playerRow) wrap.appendChild(button);
-
     const output = document.createElement('div');
     output.className = 'wvt-output';
     output.hidden = true;
+
+    wrap.appendChild(button);
     wrap.appendChild(output);
-    bubble.appendChild(wrap);
+
+    // Attach to the element that hugs the bubble (correct chat side), not to
+    // the full-width row container; fall back to the row with CSS alignment
+    // (wvt-out / wvt-in) doing the side placement either way.
+    const host = bubble.matches('.message-in, .message-out')
+      ? bubble
+      : bubble.querySelector('.message-in, .message-out') || bubble;
+    host.appendChild(wrap);
 
     return { wrap, button, output };
   }
@@ -268,7 +292,7 @@
     bubble.dataset.wvtAttached = '1';
     attachedCount++;
 
-    const ui = createUi(bubble);
+    const ui = createUi(bubble, control);
 
     // Restore a previously saved transcript for this message, if any.
     const key = messageKey(bubble);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WhatsApp Voice Transcriber (Local)",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Transcribe WhatsApp Web voice messages directly in the chat. Speech recognition runs 100% locally in your browser (Whisper via WASM) - no audio ever leaves your machine.",
   "permissions": ["offscreen", "storage"],
   "background": {
