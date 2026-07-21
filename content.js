@@ -1,13 +1,14 @@
 // Content script for web.whatsapp.com.
-// Adds a "Transcribe" button to every voice message. Clicking it grabs the
-// audio blob from the page and hands it to the extension's offscreen document,
-// where a local Whisper model produces the transcript. The transcript is then
-// shown directly underneath the voice player, inside the chat bubble.
+// Adds a small transcript icon next to every voice message. Clicking it asks
+// injected.js (running in the page's MAIN world) to capture the audio bytes,
+// then hands them to the extension's offscreen document, where a local
+// Whisper model produces the transcript. The transcript is shown directly
+// underneath the voice player, inside the chat bubble.
 
 (() => {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
 
   const log = (...args) =>
     console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
@@ -19,12 +20,17 @@
   const ARIA_VOICE_RE = /voice message|audio message|sprachnachricht|mensaje de voz|message vocal/i;
 
   const STORAGE_PREFIX = 'transcript:';
-  const MAX_AUDIO_WAIT_MS = 8000;
   const SCAN_INTERVAL_MS = 1500;
+  const CAPTURE_TIMEOUT_MS = 15000;
+
+  const ICON_SVG =
+    '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">' +
+    '<path fill="currentColor" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z"/></svg>';
 
   const pending = new Map(); // requestId -> { bubble, ui, lastActivity }
   let requestCounter = 0;
   let attachedCount = 0;
+  let captureInFlight = false;
 
   // ---------------------------------------------------------------- helpers
 
@@ -44,45 +50,30 @@
     return id ? STORAGE_PREFIX + id : null;
   }
 
-  function waitFor(check, timeoutMs, intervalMs = 50) {
-    return new Promise((resolve) => {
-      const started = Date.now();
-      const timer = setInterval(() => {
-        const value = check();
-        if (value) {
-          clearInterval(timer);
-          resolve(value);
-        } else if (Date.now() - started > timeoutMs) {
-          clearInterval(timer);
-          resolve(null);
-        }
-      }, intervalMs);
-    });
-  }
-
-  function blobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        // reader.result = "data:<mime>;base64,<data>"
-        const result = String(reader.result);
-        resolve(result.slice(result.indexOf(',') + 1));
-      };
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
   }
 
   // ------------------------------------------------------- message finding
 
-  // Returns the element (icon or button) identifying a voice/audio message
-  // control inside `scope`.
+  function isOurUi(el) {
+    return !!el.closest('.wvt-wrap, .wvt-btn');
+  }
+
   function findVoiceControls(scope) {
     const controls = [];
     for (const el of scope.querySelectorAll('span[data-icon]')) {
+      if (isOurUi(el)) continue;
       if (ICON_NAME_RE.test(el.getAttribute('data-icon') || '')) controls.push(el);
     }
     for (const btn of scope.querySelectorAll('button[aria-label]')) {
+      if (isOurUi(btn)) continue;
       if (ARIA_VOICE_RE.test(btn.getAttribute('aria-label') || '')) controls.push(btn);
     }
     return controls;
@@ -90,11 +81,13 @@
 
   function findButtonByIcon(bubble, iconNameRe, ariaRe) {
     for (const el of bubble.querySelectorAll('span[data-icon]')) {
+      if (isOurUi(el)) continue;
       if (iconNameRe.test(el.getAttribute('data-icon') || '')) {
         return el.closest('button') || el.parentElement;
       }
     }
     for (const btn of bubble.querySelectorAll('button[aria-label]')) {
+      if (isOurUi(btn)) continue;
       if (ariaRe.test(btn.getAttribute('aria-label') || '')) return btn;
     }
     return null;
@@ -107,98 +100,112 @@
 
   // ------------------------------------------------------ audio acquisition
 
-  // Returns the <audio> element that belongs to this voice message, loading
-  // it if necessary by briefly (and muted) starting playback.
-  async function getAudioElement(bubble) {
-    const existing = bubble.querySelector('audio');
-    if (existing && existing.src) return existing;
-
-    const playButton = findPlayButton(bubble);
-    if (!playButton) return null;
-
-    // WhatsApp only creates/loads the <audio> element when playback starts.
-    // Start it muted, capture the element, then immediately pause again.
-    const before = new Set(document.querySelectorAll('audio'));
-    const muted = new Set();
-    const muteNewAudio = () => {
-      for (const a of document.querySelectorAll('audio')) {
-        if (!before.has(a) && !a.muted) {
-          a.muted = true;
-          muted.add(a);
-        }
+  // Ask the MAIN-world script (injected.js) to capture this voice note's
+  // audio bytes. Returns an ArrayBuffer.
+  function captureAudio(bubble) {
+    return new Promise((resolve, reject) => {
+      if (captureInFlight) {
+        reject(new Error('Another capture is in progress; try again in a moment.'));
+        return;
       }
-    };
-    const muteTimer = setInterval(muteNewAudio, 20);
+      captureInFlight = true;
 
-    try {
-      playButton.click();
-      const audio = await waitFor(() => {
-        muteNewAudio();
-        const inBubble = bubble.querySelector('audio');
-        if (inBubble && inBubble.src) return inBubble;
-        for (const a of document.querySelectorAll('audio')) {
-          if (!before.has(a) && a.src) return a;
-        }
-        return null;
-      }, MAX_AUDIO_WAIT_MS);
+      const id = 'wvt-cap-' + Date.now() + '-' + requestCounter++;
 
-      // Stop playback again: prefer WhatsApp's own pause button so its UI
-      // state stays consistent, fall back to pausing the element directly.
-      const pauseButton = findPauseButton(bubble);
-      if (pauseButton) pauseButton.click();
-      if (audio) {
-        try {
-          audio.pause();
-          audio.currentTime = 0;
-        } catch (e) {
-          /* ignore */
+      const cleanup = () => {
+        captureInFlight = false;
+        window.removeEventListener('message', onMessage);
+        clearTimeout(timeout);
+      };
+
+      const onMessage = (event) => {
+        if (event.source !== window) return;
+        const msg = event.data;
+        if (!msg || msg.__wvt !== true || msg.id !== id) return;
+        if (msg.type === 'WVT_AUDIO' && msg.buffer) {
+          cleanup();
+          resolve(msg.buffer);
+        } else if (msg.type === 'WVT_ERROR') {
+          cleanup();
+          reject(new Error(msg.error || 'Audio capture failed.'));
         }
+      };
+      window.addEventListener('message', onMessage);
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out waiting for the audio.'));
+      }, CAPTURE_TIMEOUT_MS);
+
+      const playing = !!findPauseButton(bubble);
+      window.postMessage(
+        { __wvt: true, type: 'WVT_ARM', id, expectPlaying: playing },
+        window.location.origin
+      );
+
+      if (!playing) {
+        const playButton = findPlayButton(bubble);
+        if (!playButton) {
+          cleanup();
+          reject(new Error('Could not find the play button for this message.'));
+          return;
+        }
+        // Give the MAIN world a beat to arm before triggering playback.
+        setTimeout(() => playButton.click(), 50);
       }
-      return audio;
-    } finally {
-      clearInterval(muteTimer);
-      // Restore sound for normal playback later.
-      setTimeout(() => {
-        for (const a of muted) a.muted = false;
-      }, 300);
-    }
+    });
   }
 
-  async function fetchAudioBase64(bubble) {
-    const audio = await getAudioElement(bubble);
-    if (!audio || !audio.src) {
-      throw new Error(
-        'Could not access the audio for this message. Try playing it once, then transcribe again.'
-      );
+  // Fallback for the (older) DOM layout where the <audio> element lives
+  // inside the message bubble.
+  async function domAudioFallback(bubble) {
+    const audio = bubble.querySelector('audio');
+    if (!audio || !audio.src) return null;
+    try {
+      const response = await fetch(audio.src);
+      if (!response.ok) return null;
+      return await (await response.blob()).arrayBuffer();
+    } catch (e) {
+      return null;
     }
-    const response = await fetch(audio.src);
-    if (!response.ok) throw new Error('Failed to read audio data.');
-    const blob = await response.blob();
-    return blobToBase64(blob);
   }
 
   // ------------------------------------------------------------------- UI
 
   function createUi(bubble) {
+    const button = document.createElement('button');
+    button.className = 'wvt-btn';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Transcribe');
+    button.title = 'Transcribe locally (audio never leaves your browser)';
+    button.innerHTML = ICON_SVG;
+
+    // Place the icon inline next to the voice player controls when possible,
+    // like WhatsApp's own hover icons; otherwise fall back to below the
+    // bubble content.
+    const playerButton = findPlayButton(bubble) || findPauseButton(bubble);
+    const playerRow = playerButton && playerButton.parentElement;
+    if (playerRow) {
+      button.classList.add('wvt-inline');
+      playerRow.appendChild(button);
+    }
+
     const wrap = document.createElement('div');
     wrap.className = 'wvt-wrap';
-
-    const button = document.createElement('button');
-    button.className = 'wvt-button';
-    button.type = 'button';
-    button.textContent = 'Transcribe';
-    button.title =
-      'Transcribe this voice message locally (audio never leaves your browser)';
+    if (!playerRow) wrap.appendChild(button);
 
     const output = document.createElement('div');
     output.className = 'wvt-output';
     output.hidden = true;
-
-    wrap.appendChild(button);
     wrap.appendChild(output);
     bubble.appendChild(wrap);
 
     return { wrap, button, output };
+  }
+
+  function setWorking(ui, working) {
+    ui.button.disabled = working;
+    ui.button.classList.toggle('wvt-working', working);
   }
 
   function showStatus(ui, text) {
@@ -212,6 +219,7 @@
     ui.output.hidden = false;
     ui.output.classList.remove('wvt-status', 'wvt-error');
     ui.output.textContent = text;
+    setWorking(ui, false);
     ui.button.hidden = true;
   }
 
@@ -220,24 +228,30 @@
     ui.output.classList.remove('wvt-status');
     ui.output.classList.add('wvt-error');
     ui.output.textContent = text;
-    ui.button.disabled = false;
-    ui.button.textContent = 'Retry transcription';
+    setWorking(ui, false);
+    ui.button.title = 'Retry transcription';
   }
 
   async function onTranscribeClick(bubble, ui) {
-    ui.button.disabled = true;
-    ui.button.textContent = 'Transcribing…';
-    showStatus(ui, 'Reading audio…');
+    setWorking(ui, true);
+    showStatus(ui, 'Capturing audio…');
 
     const requestId = 'wvt-' + Date.now() + '-' + requestCounter++;
     try {
-      const audioBase64 = await fetchAudioBase64(bubble);
+      let buffer;
+      try {
+        buffer = await captureAudio(bubble);
+      } catch (captureErr) {
+        buffer = await domAudioFallback(bubble);
+        if (!buffer) throw captureErr;
+      }
+
       pending.set(requestId, { bubble, ui, lastActivity: Date.now() });
       await chrome.runtime.sendMessage({
         target: 'background',
         type: 'transcribe',
         requestId,
-        audioBase64,
+        audioBase64: arrayBufferToBase64(buffer),
       });
       showStatus(ui, 'Starting local transcription…');
     } catch (err) {
@@ -274,6 +288,15 @@
   }
 
   function scan() {
+    // WhatsApp re-renders parts of message rows (e.g. when playback state
+    // changes), which can destroy our injected UI while the bubble keeps its
+    // attached flag. Detect that and allow re-attachment.
+    for (const bubble of document.querySelectorAll('[data-wvt-attached]')) {
+      if (!bubble.querySelector('.wvt-btn') && !bubble.querySelector('.wvt-output')) {
+        delete bubble.dataset.wvtAttached;
+      }
+    }
+
     const before = attachedCount;
     for (const control of findVoiceControls(document)) {
       attachToVoiceMessage(control);
@@ -349,12 +372,6 @@
           'no voice messages detected yet. If a chat with voice messages is open, ' +
             'please report these data-icon values found on the page:',
           JSON.stringify(icons)
-        );
-        log(
-          'audio elements on page:',
-          document.querySelectorAll('audio').length,
-          '| message rows:',
-          document.querySelectorAll('.message-in, .message-out, [data-id]').length
         );
       }
     }, 20000);

@@ -77,8 +77,13 @@ WhatsApp Web tab                      Extension
 └─────────────────────┘  transcript
 ```
 
-- `content.js` finds voice messages in the chat, obtains the audio blob from the
-  page, and renders the transcript inline.
+- `injected.js` runs in the page's MAIN world at document_start and hooks
+  `HTMLMediaElement.play()`, `URL.createObjectURL()` and `decodeAudioData()`.
+  WhatsApp plays voice notes through a detached audio element that never
+  appears in the DOM, so hooking these APIs is the only reliable way to reach
+  the audio bytes (and to immediately mute/pause the capture playback).
+- `content.js` finds voice messages in the chat, requests the audio bytes from
+  `injected.js` via `window.postMessage`, and renders the transcript inline.
 - `background.js` routes messages and manages the offscreen document.
 - `offscreen.js` decodes the audio with the Web Audio API and runs Whisper via
   transformers.js. The ONNX WASM runtime is bundled in `lib/` so no code is

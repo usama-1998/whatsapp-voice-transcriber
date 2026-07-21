@@ -1,30 +1,61 @@
 /* UI injected into WhatsApp Web chat bubbles by the voice transcriber. */
 
 .wvt-wrap {
-  margin-top: 4px;
-  padding: 0 6px 4px;
+  margin-top: 2px;
+  padding: 0 4px 2px;
   font-family: inherit;
 }
 
-.wvt-button {
-  display: inline-block;
-  padding: 3px 10px;
+/* Small icon button, styled like WhatsApp's own subtle inline icons. */
+.wvt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
-  border-radius: 12px;
-  background: #00a884;
-  color: #fff;
-  font-size: 12px;
-  line-height: 1.4;
+  border-radius: 50%;
+  background: transparent;
+  color: #667781;
   cursor: pointer;
-}
-
-.wvt-button:hover:not(:disabled) {
-  background: #008f72;
-}
-
-.wvt-button:disabled {
   opacity: 0.65;
+  flex: none;
+}
+
+.wvt-btn.wvt-inline {
+  align-self: center;
+  margin-left: 2px;
+}
+
+.wvt-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(11, 20, 26, 0.08);
+}
+
+.wvt-btn:disabled {
   cursor: default;
+}
+
+/* Spinner while capturing / transcribing. */
+.wvt-btn.wvt-working svg {
+  display: none;
+}
+
+.wvt-btn.wvt-working::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: wvt-rotate 0.8s linear infinite;
+}
+
+@keyframes wvt-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .wvt-output {
@@ -42,6 +73,7 @@
 
 .wvt-output.wvt-status {
   font-style: italic;
+  font-size: 12px;
   opacity: 0.75;
 }
 
@@ -51,6 +83,16 @@
 }
 
 /* Dark theme (WhatsApp toggles a class on <body>/<html>) */
+body.dark .wvt-btn,
+.dark .wvt-btn {
+  color: #8696a0;
+}
+
+body.dark .wvt-btn:hover:not(:disabled),
+.dark .wvt-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 body.dark .wvt-output,
 .dark .wvt-output {
   background: rgba(255, 255, 255, 0.08);
