@@ -1,0 +1,57 @@
+/* UI injected into WhatsApp Web chat bubbles by the voice transcriber. */
+
+.wvt-wrap {
+  margin-top: 4px;
+  padding: 0 6px 4px;
+  font-family: inherit;
+}
+
+.wvt-button {
+  display: inline-block;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 12px;
+  background: #00a884;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.wvt-button:hover:not(:disabled) {
+  background: #008f72;
+}
+
+.wvt-button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.wvt-output {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 420px;
+}
+
+.wvt-output.wvt-status {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+.wvt-output.wvt-error {
+  background: rgba(220, 60, 60, 0.12);
+  color: #c0392b;
+}
+
+/* Dark theme (WhatsApp toggles a class on <body>/<html>) */
+body.dark .wvt-output,
+.dark .wvt-output {
+  background: rgba(255, 255, 255, 0.08);
+}
