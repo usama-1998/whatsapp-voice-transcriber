@@ -28,7 +28,7 @@ runtime compiled to WebAssembly).
 1. Open a chat that contains a voice message.
 2. A green **Transcribe** button appears under the voice player.
 3. Click it. The first time ever, the extension downloads the Whisper model
-   (~80 MB, one time only — it is cached by the browser afterwards).
+   (~250 MB, one time only — it is cached by the browser afterwards).
 4. The transcript appears under the voice message within a few seconds
    (longer messages take proportionally longer).
 
@@ -52,14 +52,14 @@ The extension requests no host permissions beyond running its content script on
 
 ## Choosing a different model
 
-The default is `Xenova/whisper-base` (good multilingual quality, ~80 MB). To
-change it, edit `MODEL_ID` in `offscreen.js`:
+The default is `Xenova/whisper-small` (best accuracy, ~250 MB). To change it,
+edit `MODEL_ID` in `offscreen.js`:
 
 | Model | Size | Notes |
 | --- | --- | --- |
 | `Xenova/whisper-tiny` | ~40 MB | Fastest, lower accuracy |
-| `Xenova/whisper-base` | ~80 MB | Default, good balance |
-| `Xenova/whisper-small` | ~250 MB | Best accuracy, slower |
+| `Xenova/whisper-base` | ~80 MB | Good balance of speed and accuracy |
+| `Xenova/whisper-small` | ~250 MB | Default, best accuracy, slower |
 | `Xenova/whisper-base.en` | ~80 MB | English-only, slightly better for English |
 
 After editing, click **Reload** on the extension in `chrome://extensions`.

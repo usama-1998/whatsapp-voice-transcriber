@@ -9,10 +9,10 @@ import { pipeline, env } from './lib/transformers.min.js';
 
 // Model options (trade speed for accuracy):
 //   'Xenova/whisper-tiny'   ~40 MB  - fastest, okay quality
-//   'Xenova/whisper-base'   ~80 MB  - good default, multilingual
+//   'Xenova/whisper-base'   ~80 MB  - good balance, multilingual
 //   'Xenova/whisper-small' ~250 MB  - best quality, slower
 // The multilingual models auto-detect the spoken language.
-const MODEL_ID = 'Xenova/whisper-base';
+const MODEL_ID = 'Xenova/whisper-small';
 
 const WHISPER_SAMPLE_RATE = 16000;
 
