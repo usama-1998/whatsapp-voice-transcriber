@@ -356,7 +356,7 @@
     ui.button.title = 'Retry transcription';
   }
 
-  async function onTranscribeClick(bubble, ui) {
+  async function onTranscribeClick(bubble, ui, autoOpenModal = true) {
     setWorking(ui, true);
     showStatus(ui, 'Capturing audio…');
 
@@ -370,7 +370,7 @@
         if (!buffer) throw captureErr;
       }
 
-      pending.set(requestId, { bubble, ui, lastActivity: Date.now() });
+      pending.set(requestId, { bubble, ui, lastActivity: Date.now(), autoOpen: autoOpenModal });
       await chrome.runtime.sendMessage({
         target: 'background',
         type: 'transcribe',
@@ -430,7 +430,7 @@
           // Wait a second for WhatsApp to finish rendering the audio element before capturing
           setTimeout(() => {
             if (!ui.button.disabled && !ui.button.classList.contains('wvt-done')) {
-              onTranscribeClick(bubble, ui);
+              onTranscribeClick(bubble, ui, false); // auto-transcribe without auto-opening modal
             }
           }, 1500);
         }
@@ -469,7 +469,7 @@
       showStatus(entry.ui, message.text);
     } else if (message.type === 'result') {
       pending.delete(message.requestId);
-      showResult(entry.ui, message.text);
+      showResult(entry.ui, message.text, entry.autoOpen);
       const key = messageKey(entry.bubble);
       if (key) {
         chrome.storage.local.set({ [key]: message.text }).catch(() => {});
