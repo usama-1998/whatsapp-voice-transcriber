@@ -22,7 +22,7 @@
   cursor: pointer;
   flex: none;
   transition: all 0.2s ease;
-  margin-left: 3px;
+  margin-right: 3px;
 }
 
 /* Hover: soft green glow */

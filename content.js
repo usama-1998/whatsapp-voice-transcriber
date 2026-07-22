@@ -229,7 +229,7 @@
       buttonHost =
         bubble.querySelector('[data-testid="msg-container"]') || bubble;
     }
-    buttonHost.appendChild(button);
+    buttonHost.prepend(button);
 
     // Small inline status/error text (inside the msg-container).
     const msgContainer =
