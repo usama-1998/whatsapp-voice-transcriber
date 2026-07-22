@@ -91,11 +91,24 @@ async function handleTranscribe({ requestId, tabId, audioBase64 }) {
     progress('Decoding audio…');
     const audio = await decodeToMono16k(base64ToArrayBuffer(audioBase64));
 
-    progress('Transcribing locally…');
+    // Whisper processes long audio in chunks. Calculate total chunks to report accurate %.
+    // chunk_length_s = 30s, stride_length_s = 5s. 
+    // Step size = (30 - 2*5) * 16000 = 320000 samples.
+    const stepSize = 320000;
+    const totalChunks = Math.max(1, Math.ceil(audio.length / stepSize));
+    let currentChunk = 0;
+
+    progress(`Transcribing locally… 0%`);
     const output = await transcriber(audio, {
       // Chunking lets Whisper handle voice notes longer than 30 s.
       chunk_length_s: 30,
       stride_length_s: 5,
+      chunk_callback: (chunk) => {
+        currentChunk++;
+        const pct = Math.floor((currentChunk / totalChunks) * 100);
+        // Cap at 99% until the final result is fully assembled
+        progress(`Transcribing locally… ${Math.min(99, pct)}%`);
+      }
     });
 
     const text = (output && output.text ? output.text : '').trim();
