@@ -30,6 +30,7 @@
   let requestCounter = 0;
   let attachedCount = 0;
   let captureInFlight = false;
+  let isInitialized = false; // Prevents auto-transcribing historical messages on load
 
   // ---------------------------------------------------------------- helpers
 
@@ -405,15 +406,34 @@
 
     // Restore a previously saved transcript for this message, if any.
     const key = messageKey(bubble);
+    let alreadyTranscribed = false;
     if (key) {
       try {
         const stored = await chrome.storage.local.get(key);
         if (stored && stored[key]) {
           showResult(ui, stored[key], false); // don't auto-open modal
-          return;
+          alreadyTranscribed = true;
         }
       } catch (e) {
         /* storage unavailable - ignore */
+      }
+    }
+
+    if (!alreadyTranscribed && isInitialized) {
+      // Check if it's a genuinely new message by seeing if it's near the bottom of the DOM list
+      const row = bubble.closest('div[role="row"]');
+      if (row && row.parentElement) {
+        const rows = Array.from(row.parentElement.children);
+        const index = rows.indexOf(row);
+        // If it's one of the last few rows, it's a new message (not scrolled history)
+        if (index >= rows.length - 5) {
+          // Wait a second for WhatsApp to finish rendering the audio element before capturing
+          setTimeout(() => {
+            if (!ui.button.disabled && !ui.button.classList.contains('wvt-done')) {
+              onTranscribeClick(bubble, ui);
+            }
+          }, 1500);
+        }
       }
     }
   }
@@ -487,6 +507,12 @@
     // DOM state.
     scan();
     setInterval(scan, SCAN_INTERVAL_MS);
+
+    // After 5 seconds, assume all historical messages are loaded. Any new
+    // messages found after this at the bottom of the chat will be auto-transcribed.
+    setTimeout(() => {
+      isInitialized = true;
+    }, 5000);
 
     // Diagnostics: if nothing was found after a while, print what icons the
     // page actually uses so selector updates are easy.
