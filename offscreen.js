@@ -98,6 +98,11 @@ async function handleTranscribe({ requestId, tabId, audioBase64 }) {
     const totalChunks = Math.max(1, Math.ceil(audio.length / stepSize));
     let currentChunk = 0;
 
+    const audioLengthInSeconds = audio.length / 16000;
+    const chunkDuration = Math.min(30, audioLengthInSeconds);
+    // Rough estimate: ~4 tokens generated per second of speech
+    const estimatedTokens = Math.max(10, Math.floor(chunkDuration * 4));
+
     progress(`Transcribing locally… 0%`);
     const output = await transcriber(audio, {
       // Chunking lets Whisper handle voice notes longer than 30 s.
@@ -108,6 +113,28 @@ async function handleTranscribe({ requestId, tabId, audioBase64 }) {
         const pct = Math.floor((currentChunk / totalChunks) * 100);
         // Cap at 99% until the final result is fully assembled
         progress(`Transcribing locally… ${Math.min(99, pct)}%`);
+      },
+      callback_function: (beams) => {
+        try {
+          let generatedTokens = 0;
+          if (Array.isArray(beams) && beams.length > 0) {
+            if (beams[0].output_token_ids) {
+              generatedTokens = beams[0].output_token_ids.length;
+            } else if (typeof beams[0] === 'number') {
+              // Sometimes it's just an array of token ids
+              generatedTokens = beams.length;
+            }
+          }
+          if (generatedTokens > 0) {
+             const basePct = Math.floor((currentChunk / totalChunks) * 100);
+             const chunkProgress = Math.min(99, Math.floor((generatedTokens / estimatedTokens) * 100));
+             const chunkWeight = 100 / totalChunks;
+             let currentPct = basePct + Math.floor((chunkProgress * chunkWeight) / 100);
+             progress(`Transcribing locally… ${Math.min(99, currentPct)}%`);
+          }
+        } catch (e) {
+          // ignore callback errors to avoid breaking transcription
+        }
       }
     });
 
