@@ -1,0 +1,284 @@
+/* UI injected into WhatsApp Web chat bubbles by the voice transcriber. */
+
+/* ===================================================================
+   AI TRANSCRIBE BUTTON
+   Placed inline inside the voice controls row, right next to the
+   waveform. Styled to blend with WhatsApp's native voice controls.
+   =================================================================== */
+
+.wvt-btn {
+  position: relative;
+  top: -2.5px; /* Move slightly higher to align with voice controls */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #ffffff; /* AI icon color to white */
+  cursor: pointer;
+  flex: none;
+  transition: all 0.2s ease;
+  margin-left: 3px;
+}
+
+/* Hover: soft green glow */
+.wvt-btn:hover,
+.wvt-btn:focus-visible {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  transform: scale(1.12);
+}
+
+/* Active / clicked */
+.wvt-btn:active {
+  transform: scale(0.92);
+}
+
+/* Done state: transcript available, click to view */
+.wvt-btn.wvt-done {
+  color: #ffffff;
+}
+.wvt-btn.wvt-done:hover {
+  color: #ffffff;
+  background: rgba(0, 168, 132, 0.3);
+}
+
+/* Disabled */
+.wvt-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+  transform: none !important;
+  background: transparent !important;
+}
+
+/* Working / spinning state — green theme */
+.wvt-btn.wvt-working {
+  color: #00a884 !important;
+  background: rgba(0, 168, 132, 0.15) !important;
+  animation: wvt-pulse 2s infinite alternate;
+}
+
+.wvt-btn.wvt-working svg { display: none; }
+
+.wvt-btn.wvt-working::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: #00a884;
+  border-left-color: rgba(0, 168, 132, 0.5);
+  animation: wvt-rotate 0.8s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+/* ===================================================================
+   KEYFRAME ANIMATIONS
+   =================================================================== */
+
+@keyframes wvt-rotate {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes wvt-pulse {
+  from { box-shadow: 0 0 0 0 rgba(0, 168, 132, 0.3); }
+  to   { box-shadow: 0 0 0 6px rgba(0, 168, 132, 0); }
+}
+
+@keyframes wvt-fade-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes wvt-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes wvt-modal-in {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ===================================================================
+   INLINE STATUS TEXT (small indicator during capture/transcription)
+   =================================================================== */
+
+.wvt-output {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #00a884;
+  line-height: 1.4;
+}
+
+.wvt-output.wvt-error {
+  color: #f87171;
+}
+
+/* ===================================================================
+   MODAL OVERLAY — shows transcription in a premium popup
+   =================================================================== */
+
+.wvt-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: wvt-overlay-in 0.2s ease;
+}
+
+/* Modal card */
+.wvt-modal {
+  background: #fff;
+  border-radius: 16px;
+  width: 90%;
+  max-width: 520px;
+  max-height: 80vh;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: wvt-modal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Header */
+.wvt-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.wvt-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111b21;
+  font-family: inherit;
+}
+
+.wvt-modal-title svg {
+  width: 22px;
+  height: 22px;
+  stroke: #00a884;
+  flex: none;
+}
+
+.wvt-modal-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #667781;
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex: none;
+}
+
+.wvt-modal-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Body */
+.wvt-modal-body {
+  padding: 20px 24px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: #111b21;
+  overflow-y: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+/* Footer */
+.wvt-modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.wvt-modal-copy {
+  background: #00a884;
+  color: #fff;
+  border: none;
+  padding: 8px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.wvt-modal-copy:hover {
+  background: #008f6f;
+  box-shadow: 0 4px 12px rgba(0, 168, 132, 0.3);
+}
+
+.wvt-modal-copy.wvt-copied {
+  background: #111b21;
+}
+
+/* ===================================================================
+   DARK THEME
+   =================================================================== */
+
+body.dark .wvt-modal,
+.dark .wvt-modal {
+  background: #1f2c34;
+}
+
+body.dark .wvt-modal-header,
+.dark .wvt-modal-header {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+body.dark .wvt-modal-title,
+.dark .wvt-modal-title {
+  color: #e9edef;
+}
+
+body.dark .wvt-modal-close,
+.dark .wvt-modal-close {
+  color: #aebac1;
+}
+
+body.dark .wvt-modal-close:hover,
+.dark .wvt-modal-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.dark .wvt-modal-body,
+.dark .wvt-modal-body {
+  color: #e9edef;
+}
+
+body.dark .wvt-modal-footer,
+.dark .wvt-modal-footer {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
