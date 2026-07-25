@@ -8,7 +8,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
 
   const log = (...args) =>
     console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
@@ -310,7 +310,6 @@
     closeBtn.className = 'wvt-modal-close';
     closeBtn.type = 'button';
     closeBtn.innerHTML = '&#10005;';
-    closeBtn.addEventListener('click', () => overlay.remove());
     header.appendChild(title);
     header.appendChild(closeBtn);
 
@@ -350,13 +349,19 @@
     modal.appendChild(footer);
     overlay.appendChild(modal);
 
-    // Close on overlay click or Escape.
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
+    // Close on ✕, overlay click, or Escape — every path must also detach the
+    // document-level key listener, or each opened modal leaks one.
     const onKey = (e) => {
-      if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+      if (e.key === 'Escape') close();
     };
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
     document.addEventListener('keydown', onKey);
 
     document.body.appendChild(overlay);
@@ -422,9 +427,12 @@
     const bubble = findMessageBubble(control);
     if (!bubble || bubble.dataset.wvtAttached) return;
     
-    // Ignore the user's own outgoing voice messages
+    // Ignore the user's own outgoing voice messages. Use a distinct flag
+    // value: scan()'s "heal after re-render" cleanup only resets bubbles
+    // flagged '1' (which should carry UI), so skipped bubbles aren't
+    // re-examined every scan tick.
     if (isOutgoingMessage(bubble, control)) {
-      bubble.dataset.wvtAttached = '1';
+      bubble.dataset.wvtAttached = 'skip';
       return;
     }
 
@@ -504,12 +512,38 @@
 
   const MAX_EXPORT_DAYS = 7;
 
-  // WhatsApp always renders message metadata with a concrete "M/D/YYYY" date
-  // (relative labels like "Yesterday" only appear in the chat list, never in
-  // data-pre-plain-text). Chrome's Date constructor parses that slash format
-  // as month/day/year, matching what produced the string.
-  function parseWhatsAppDate(dateStr) {
+  // WhatsApp renders message metadata dates in the user's locale format:
+  // "7/24/2026" (M/D/YYYY), "24/7/2026" (D/M/YYYY), "24.7.2026" (D.M.YYYY)...
+  // Relative labels ("Yesterday") only appear in the chat list, never in
+  // data-pre-plain-text, so these are always numeric.
+  const DATE_PARTS_RE = /^(\d{1,2})([\/.\-])(\d{1,2})\2(\d{2,4})$/;
+
+  // Decide day-first vs month-first from sample date strings: any sample
+  // with a first component > 12 must be day-first, one with a second
+  // component > 12 must be month-first. Undecidable defaults to month-first.
+  function detectDayFirst(samples) {
+    for (const s of samples) {
+      const m = DATE_PARTS_RE.exec((s || '').trim());
+      if (!m) continue;
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[3], 10);
+      if (a > 12 && b <= 12) return true;
+      if (b > 12 && a <= 12) return false;
+    }
+    return false;
+  }
+
+  function parseWhatsAppDate(dateStr, dayFirst) {
     if (!dateStr) return null;
+    const m = DATE_PARTS_RE.exec(dateStr.trim());
+    if (m) {
+      let year = parseInt(m[4], 10);
+      if (year < 100) year += 2000;
+      const day = dayFirst ? parseInt(m[1], 10) : parseInt(m[3], 10);
+      const month = dayFirst ? parseInt(m[3], 10) : parseInt(m[1], 10);
+      if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+      return new Date(year, month - 1, day);
+    }
     const d = new Date(dateStr);
     return isNaN(d.getTime()) ? null : d;
   }
@@ -518,10 +552,15 @@
     return new Date(date.getFullYear(), date.getMonth(), date.getDate());
   }
 
-  // Re-render a Date using WhatsApp's own (unpadded) M/D/YYYY convention, so
-  // a computed range-start date reads consistently with the anchor date.
-  function formatSlashDate(date) {
-    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  // Re-render a Date in the same order and separator WhatsApp itself used,
+  // so a computed range-start date reads consistently with the anchor date.
+  function formatWhatsAppDate(date, sampleDateStr, dayFirst) {
+    const sepMatch = DATE_PARTS_RE.exec((sampleDateStr || '').trim());
+    const sep = sepMatch ? sepMatch[2] : '/';
+    const d = date.getDate();
+    const mo = date.getMonth() + 1;
+    const y = date.getFullYear();
+    return dayFirst ? `${d}${sep}${mo}${sep}${y}` : `${mo}${sep}${d}${sep}${y}`;
   }
 
   function rowDataId(row) {
@@ -541,6 +580,9 @@
 
   function rowPrePlainMeta(row) {
     for (const el of row.querySelectorAll('[data-pre-plain-text]')) {
+      // Never read metadata out of a quoted-message preview: it would
+      // describe the quoted original, not this message.
+      if (el.closest('[aria-label*="Quoted" i]')) continue;
       const parsed = parsePrePlainText(el.getAttribute('data-pre-plain-text'));
       if (parsed) return parsed;
     }
@@ -805,6 +847,15 @@
       return;
     }
 
+    // Anchor at the chat's true bottom: if the user had scrolled up into
+    // history, the visible window would otherwise yield a stale anchor date
+    // and the export would cover the wrong day(s). Jump twice — loading the
+    // newest messages can change the scroll height.
+    for (let i = 0; i < 2; i++) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      await sleep(300);
+    }
+
     const initialRows = Array.from(document.querySelectorAll('#main div[role="row"]'));
     if (initialRows.length === 0) {
       alert('No messages found.');
@@ -815,11 +866,12 @@
     // (not today's real-world date), so it still works when reviewing a
     // chat that's been quiet for a while.
     let anchorDateStr = null;
+    const dateSamples = [];
     for (let i = initialRows.length - 1; i >= 0; i--) {
       const meta = rowPrePlainMeta(initialRows[i]);
       if (meta) {
-        anchorDateStr = meta.date;
-        break;
+        if (!anchorDateStr) anchorDateStr = meta.date;
+        dateSamples.push(meta.date);
       }
     }
 
@@ -828,13 +880,19 @@
       return;
     }
 
-    const anchorDate = parseWhatsAppDate(anchorDateStr);
+    const dayFirst = detectDayFirst(dateSamples);
+    const anchorDate = parseWhatsAppDate(anchorDateStr, dayFirst);
     let cutoffDate = null;
     if (anchorDate && rangeDays > 1) {
       cutoffDate = startOfDay(anchorDate);
       cutoffDate.setDate(cutoffDate.getDate() - (rangeDays - 1));
     }
-    const rangeStartLabel = cutoffDate ? formatSlashDate(cutoffDate) : null;
+    const rangeStartLabel = cutoffDate
+      ? formatWhatsAppDate(cutoffDate, anchorDateStr, dayFirst)
+      : null;
+    // Days the export actually covers (1 when the anchor date couldn't be
+    // parsed and the range degraded to exact-date matching).
+    const effectiveDays = cutoffDate ? rangeDays : 1;
 
     // A row's date is outside the export range once it falls before the
     // cutoff. If the anchor date couldn't be parsed (unexpected format), or
@@ -843,7 +901,7 @@
     function isOutsideRange(dateStr) {
       if (dateStr === anchorDateStr) return false;
       if (!cutoffDate) return true;
-      const d = parseWhatsAppDate(dateStr);
+      const d = parseWhatsAppDate(dateStr, dayFirst);
       if (!d) return true;
       return startOfDay(d) < cutoffDate;
     }
@@ -857,15 +915,18 @@
     const incomingNames = new Set();
     const chatTitle = getActiveChatId();
 
-    async function extractVisible() {
+    async function extractVisible(finalPass = false) {
       await expandReadMores();
 
       const rows = Array.from(document.querySelectorAll('#main div[role="row"]'));
 
       // Pass 1: metadata + date inference. Rows without their own metadata
       // (media, voice notes) inherit the date of the nearest dated row above
-      // them (messages are chronological); leading rows fall back to the
-      // nearest dated row below.
+      // them (messages are chronological). Leading rows — undated rows with
+      // no dated row above them in this window — can only guess from the
+      // row below, which sits on the wrong side of a possible day boundary;
+      // they are marked provisional and deferred to a later pass, where
+      // scrolling up brings their true preceding dated row into view.
       const infos = [];
       for (const row of rows) {
         const pre = rowPrePlainMeta(row);
@@ -879,7 +940,8 @@
       let lastDate = null;
       for (const info of infos) {
         if (info.date) lastDate = info.date;
-        else info.date = lastDate;
+        else if (lastDate) info.date = lastDate;
+        else info.provisional = true;
       }
       let nextDate = null;
       for (let i = infos.length - 1; i >= 0; i--) {
@@ -894,6 +956,7 @@
         const { dataId, pre } = info;
         let row = info.row;
         if (!dataId) continue; // date dividers, system rows
+        if (info.provisional && !finalPass) continue; // date not trustworthy yet
         if (info.date && isOutsideRange(info.date)) {
           reachedOlder = true;
           continue;
@@ -988,8 +1051,12 @@
       if (reachedOlder) break;
 
       if (scrollContainer.scrollTop === prevScrollTop || scrollContainer.scrollTop === 0) {
+        // Possibly just WhatsApp lazy-loading older history (scroll position
+        // holds while content streams in) — give it extra time before
+        // concluding we've hit the top of the chat.
         stuckCount++;
-        if (stuckCount > 3) break;
+        if (stuckCount > 5) break;
+        await sleep(500);
       } else {
         stuckCount = 0;
       }
@@ -997,6 +1064,11 @@
 
       if (extractedMessageIds.size > 5000) break; // safety limit
     }
+
+    // Final pass: pick up rows whose dates were provisional (no dated row
+    // above them in any earlier window — e.g. media at the very start of
+    // the chat history).
+    await extractVisible(true);
 
     // Scroll back to bottom for user convenience
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -1022,7 +1094,7 @@
         {
           startDate: rangeStartLabel || anchorDateStr,
           endDate: anchorDateStr,
-          rangeDays,
+          rangeDays: effectiveDays,
           chat: chatTitle || null,
           messages: finalMessages.map((m) => ({
             meta: metaOf(m).trim(),
@@ -1134,7 +1206,7 @@
     // WhatsApp re-renders parts of message rows (e.g. when playback state
     // changes), which can destroy our injected UI while the bubble keeps its
     // attached flag. Detect that and allow re-attachment.
-    for (const bubble of document.querySelectorAll('[data-wvt-attached]')) {
+    for (const bubble of document.querySelectorAll('[data-wvt-attached="1"]')) {
       if (!bubble.querySelector('.wvt-btn') && !bubble.querySelector('.wvt-output')) {
         delete bubble.dataset.wvtAttached;
       }
@@ -1153,11 +1225,27 @@
 
   // ------------------------------------------------------- message handling
 
+  let exportInFlight = false;
+
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.target !== 'content') return;
-    
+
     if (message.type === 'export_chat') {
-      handleExportChat(message.format || 'txt', message.days || 1);
+      // Two concurrent exports would fight over the scroll position and
+      // corrupt each other's extraction.
+      if (exportInFlight) {
+        alert('A chat export is already running — please wait for it to finish.');
+        return;
+      }
+      exportInFlight = true;
+      handleExportChat(message.format || 'txt', message.days || 1)
+        .catch((err) => {
+          log('export failed:', err);
+          alert('Export failed: ' + (err && err.message ? err.message : String(err)));
+        })
+        .finally(() => {
+          exportInFlight = false;
+        });
       return;
     }
 
