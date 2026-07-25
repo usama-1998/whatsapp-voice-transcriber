@@ -42,6 +42,16 @@ runtime compiled to WebAssembly).
 2. Select your desired export format (**TXT**, **CSV**, or **JSON**).
 3. Click **Export Today's Chat**. The extension will automatically scroll through your active chat and package all visible messages and stored voice transcripts into a download.
 
+Export details:
+
+- Every message line carries its time, date, and sender — including voice
+  messages, images, and documents, whose metadata is reconstructed from the
+  message bubble when WhatsApp doesn't attach it as text.
+- Voice messages that reply to (quote) another message export both the quote
+  context (`[Replying to …]`) and the voice transcript.
+- Long messages hidden behind WhatsApp's "Read more" button are expanded
+  automatically and exported in full, including bullet lists and emoji.
+
 Notes:
 
 - If the voice message hasn't been loaded by WhatsApp yet, the extension

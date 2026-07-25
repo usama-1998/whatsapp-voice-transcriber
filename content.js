@@ -8,7 +8,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.1';
+  const VERSION = '1.4.0';
 
   const log = (...args) =>
     console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
@@ -496,28 +496,303 @@
     return firstRow.parentElement;
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // A span whose entire text is a clock time, e.g. "2:25 PM" or "14:25".
+  const TIME_TEXT_RE = /^\d{1,2}:\d{2}(\s?[APap]\.?\s?[Mm]\.?)?$/;
+  const TIME_IN_TEXT_RE = /\d{1,2}:\d{2}(\s?[APap]\.?\s?[Mm]\.?)?/;
+
+  function rowDataId(row) {
+    if (row.hasAttribute('data-id')) return row.getAttribute('data-id');
+    const holder = row.querySelector('[data-id]');
+    return holder ? holder.getAttribute('data-id') : null;
+  }
+
+  // Parse WhatsApp's metadata attribute: "[7:12 PM, 7/21/2026] Some Name: ".
+  // Returns null for anything else (list items carry data-pre-plain-text
+  // values like "- " or "1. ", which must not be mistaken for metadata).
+  function parsePrePlainText(pre) {
+    const m = /^\[([^,\]]+),\s*([^\]]+)\]\s*(.*?):\s*$/.exec(pre || '');
+    if (!m) return null;
+    return { time: m[1].trim(), date: m[2].trim(), sender: m[3].trim() };
+  }
+
+  function rowPrePlainMeta(row) {
+    for (const el of row.querySelectorAll('[data-pre-plain-text]')) {
+      const parsed = parsePrePlainText(el.getAttribute('data-pre-plain-text'));
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  // Message time for rows that have no data-pre-plain-text (voice notes,
+  // images, documents...). The bubble's meta area holds the timestamp.
+  function rowTime(row) {
+    const meta = row.querySelector('[data-testid="msg-meta"]');
+    if (meta) {
+      const m = (meta.textContent || '').match(TIME_IN_TEXT_RE);
+      if (m) return m[0];
+    }
+    // Fallback: the last leaf span that contains only a time. (The timestamp
+    // renders after the message content, so a voice note's duration like
+    // "0:51" is overwritten by the real time.)
+    let found = null;
+    for (const sp of row.querySelectorAll('span')) {
+      if (sp.children.length || isOurUi(sp)) continue;
+      const t = (sp.textContent || '').trim();
+      if (TIME_TEXT_RE.test(t)) found = t;
+    }
+    return found;
+  }
+
+  function isRowOutgoing(row) {
+    if (row.querySelector('.message-out')) return true;
+    if (row.querySelector('.message-in')) return false;
+    if (row.querySelector('span[data-icon="tail-out"]')) return true;
+    if (row.querySelector('span[data-icon="tail-in"]')) return false;
+    // Delivery ticks (sent/delivered/read) render only on outgoing bubbles.
+    if (row.querySelector('[data-testid="msg-meta"] span[aria-label] svg')) return true;
+    // Geometry: outgoing bubbles sit in the right half of the chat panel.
+    const bubble =
+      row.querySelector('[data-testid="msg-container"]') ||
+      row.querySelector('[data-id]') ||
+      row;
+    const rect = bubble.getBoundingClientRect();
+    const panel = (row.closest('#main') || document.body).getBoundingClientRect();
+    return (rect.left + rect.right) / 2 > panel.left + panel.width / 2;
+  }
+
+  // The clickable quoted-reply box inside a message bubble, if any.
+  function findQuoteBox(row) {
+    const mention = row.querySelector('.quoted-mention');
+    if (mention) {
+      let el = mention.parentElement;
+      while (el && el !== row) {
+        if (
+          el.getAttribute('role') === 'button' ||
+          /quoted/i.test(el.getAttribute('aria-label') || '')
+        ) {
+          return el;
+        }
+        el = el.parentElement;
+      }
+      return mention;
+    }
+    return row.querySelector('[aria-label*="Quoted" i], [data-testid="quoted-message"]');
+  }
+
+  function quotePreview(quoteBox) {
+    const lines = (quoteBox.innerText || '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return null;
+    let sender = null;
+    let text = lines.join(' ');
+    if (lines.length > 1) {
+      sender = lines[0];
+      text = lines.slice(1).join(' ');
+    }
+    if (text.length > 150) text = text.slice(0, 147) + '…';
+    return sender ? `${sender}: ${text}` : text;
+  }
+
+  function isReadMoreButton(el) {
+    if (el.classList.contains('read-more-button')) return true;
+    if (/read-more/i.test(el.getAttribute('data-testid') || '')) return true;
+    const label = (el.textContent || '').trim().toLowerCase();
+    return label === 'read more' || label === 'show more';
+  }
+
+  function findReadMoreButtons(scope) {
+    const buttons = new Set();
+    const selector = scope
+      ? '.read-more-button, [role="button"]'
+      : '#main div[role="row"] .read-more-button, #main div[role="row"] [role="button"]';
+    for (const el of (scope || document).querySelectorAll(selector)) {
+      if (isOurUi(el)) continue;
+      if (isReadMoreButton(el)) buttons.add(el);
+    }
+    return [...buttons];
+  }
+
+  // Click every visible "Read more" until none is left (or clicks stop
+  // having an effect), so long messages are exported in full.
+  async function expandReadMores() {
+    let lastCount = Infinity;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const buttons = findReadMoreButtons();
+      if (buttons.length === 0 || buttons.length >= lastCount) return;
+      lastCount = buttons.length;
+      for (const btn of buttons) btn.click();
+      await sleep(300);
+    }
+  }
+
+  // Plain text of a message body: keeps WhatsApp's literal newlines, list
+  // markers (each list item span carries its "- " / "1. " prefix in
+  // data-pre-plain-text) and emoji (rendered as <img alt="...">), and skips
+  // clickable widgets ("Read more", quote boxes, link previews) and our UI.
+  function extractRichText(root) {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (node.nodeValue) parts.push(node.nodeValue);
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node;
+      const tag = el.tagName.toUpperCase();
+      if (tag === 'BR') {
+        parts.push('\n');
+        return;
+      }
+      if (tag === 'IMG') {
+        const alt = el.getAttribute('data-plain-text') || el.getAttribute('alt');
+        if (alt) parts.push(alt);
+        return;
+      }
+      if (tag === 'SVG' || tag === 'SCRIPT' || tag === 'STYLE') return;
+      if (el !== root) {
+        if (isOurUi(el)) return;
+        if (el.getAttribute('role') === 'button' || isReadMoreButton(el)) return;
+      }
+      const isBlock = /^(DIV|P|LI|UL|OL|BLOCKQUOTE)$/.test(tag);
+      if (isBlock && parts.length && !parts[parts.length - 1].endsWith('\n')) {
+        parts.push('\n');
+      }
+      const pre = el.getAttribute('data-pre-plain-text');
+      if (pre && el !== root && !parsePrePlainText(pre)) parts.push(pre);
+      for (const child of el.childNodes) walk(child);
+      if (isBlock && parts.length && !parts[parts.length - 1].endsWith('\n')) {
+        parts.push('\n');
+      }
+    };
+    walk(root);
+    return parts
+      .join('')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  // The outermost selectable-text span holding the message body (its nested
+  // spans/strongs/list items are fragments of the same text). Quoted-reply
+  // previews, link previews and the meta area are excluded.
+  function findMessageTextRoot(row, quoteBox) {
+    const container = row.querySelector('div.copyable-text[data-pre-plain-text]') || row;
+    let best = null;
+    for (const span of container.querySelectorAll('span.selectable-text')) {
+      if (isOurUi(span)) continue;
+      if (quoteBox && quoteBox.contains(span)) continue;
+      if (span.closest('[data-testid="msg-meta"]')) continue;
+      if (span.parentElement && span.parentElement.closest('span.selectable-text')) continue;
+      let clickable = false;
+      for (let el = span.parentElement; el && el !== container; el = el.parentElement) {
+        if (el.getAttribute('role') === 'button') {
+          clickable = true;
+          break;
+        }
+      }
+      if (clickable) continue;
+      best = span; // keep the last candidate: quote previews render first
+    }
+    return best;
+  }
+
+  // First match for selector inside row that is NOT part of the quoted-reply
+  // preview (a quote of a voice/image message renders mic icons and
+  // thumbnails that must not classify the quoting message itself).
+  function queryOutsideQuote(row, selector, quoteBox) {
+    for (const el of row.querySelectorAll(selector)) {
+      if (quoteBox && quoteBox.contains(el)) continue;
+      return el;
+    }
+    return null;
+  }
+
+  function isVoiceRow(row, quoteBox) {
+    if (
+      queryOutsideQuote(
+        row,
+        '[data-testid="audio-play"], [data-testid="audio-pause"], [data-testid="audio-download"]',
+        quoteBox
+      )
+    ) {
+      return true;
+    }
+    if (
+      queryOutsideQuote(
+        row,
+        '[aria-label="Voice message"], [aria-label="Voice note progress slider"]',
+        quoteBox
+      )
+    ) {
+      return true;
+    }
+    return findVoiceControls(row).some((el) => !quoteBox || !quoteBox.contains(el));
+  }
+
+  async function findVoiceTranscript(row, dataId) {
+    const btn = row.querySelector('.wvt-btn');
+    if (btn && btn.dataset.wvtTranscript) return btn.dataset.wvtTranscript;
+    const out = row.querySelector('.wvt-output');
+    if (
+      out &&
+      !out.hidden &&
+      !out.classList.contains('wvt-status') &&
+      !out.classList.contains('wvt-error') &&
+      out.textContent.trim()
+    ) {
+      return out.textContent.trim();
+    }
+    if (dataId) {
+      try {
+        const key = STORAGE_PREFIX + dataId;
+        const stored = await chrome.storage.local.get(key);
+        if (stored && stored[key]) return stored[key];
+      } catch (e) {
+        /* storage unavailable - ignore */
+      }
+    }
+    return null;
+  }
+
+  function mediaLabel(row, quoteBox) {
+    if (
+      queryOutsideQuote(row, 'span[data-icon^="document-"], [data-testid="document-thumb"]', quoteBox)
+    ) {
+      return '[Document]';
+    }
+    if (queryOutsideQuote(row, '[data-testid="image-thumb"], [aria-label="Open picture"]', quoteBox)) {
+      return '[Image]';
+    }
+    if (queryOutsideQuote(row, '[data-testid="video-thumb"], [aria-label="Play video"]', quoteBox)) {
+      return '[Video]';
+    }
+    if (queryOutsideQuote(row, 'img[src^="blob:"]', quoteBox)) return '[Image/Media]';
+    return null;
+  }
+
   async function handleExportChat(format = 'txt') {
     const scrollContainer = getScrollContainer();
     if (!scrollContainer) {
-      alert("Could not find scroll container.");
+      alert('Could not find scroll container.');
       return;
     }
 
     const initialRows = Array.from(document.querySelectorAll('#main div[role="row"]'));
     if (initialRows.length === 0) {
-      alert("No messages found.");
+      alert('No messages found.');
       return;
     }
-    
+
     let targetDateStr = null;
     for (let i = initialRows.length - 1; i >= 0; i--) {
-      const copyable = initialRows[i].querySelector('[data-pre-plain-text]');
-      if (copyable) {
-        const match = copyable.getAttribute('data-pre-plain-text').match(/,\s(.*?)]/);
-        if (match) {
-          targetDateStr = match[1];
-          break;
-        }
+      const meta = rowPrePlainMeta(initialRows[i]);
+      if (meta) {
+        targetDateStr = meta.date;
+        break;
       }
     }
 
@@ -528,136 +803,151 @@
 
     const extractedMessageIds = new Set();
     const allChunks = [];
+    // Sender names by direction, learned from rows that carry
+    // data-pre-plain-text, then reused for rows that don't (voice notes,
+    // media). incomingNames guards against misattribution in group chats.
+    const senderNames = { in: null, out: null };
+    const incomingNames = new Set();
+    const chatTitle = getActiveChatId();
 
     async function extractVisible() {
-      // Expand any "Read more" buttons
-      const readMores = document.querySelectorAll('#main div[role="row"] div[role="button"]');
-      let clickedAny = false;
-      for (const btn of readMores) {
-        if (btn.innerText && btn.innerText.toLowerCase().includes('read more')) {
-          btn.click();
-          clickedAny = true;
-        }
-      }
-      if (clickedAny) {
-        await new Promise(r => setTimeout(r, 100)); // wait for DOM expansion
-      }
+      await expandReadMores();
 
-      let reachedOlder = false;
       const rows = Array.from(document.querySelectorAll('#main div[role="row"]'));
-      const chunk = [];
-      
+
+      // Pass 1: metadata + date inference. Rows without their own metadata
+      // (media, voice notes) inherit the date of the nearest dated row above
+      // them (messages are chronological); leading rows fall back to the
+      // nearest dated row below.
+      const infos = [];
       for (const row of rows) {
-        let meta = '';
-        const copyable = row.querySelector('[data-pre-plain-text]');
-        if (copyable) {
-          meta = copyable.getAttribute('data-pre-plain-text');
-        } else {
-          // Traverse up to find the group's metadata
-          let prev = row.previousElementSibling;
-          while (prev) {
-            const prevCopyable = prev.querySelector('[data-pre-plain-text]');
-            if (prevCopyable) {
-              meta = prevCopyable.getAttribute('data-pre-plain-text');
-              break;
-            }
-            prev = prev.previousElementSibling;
-          }
-          if (!meta) meta = '[Unknown Time] Unknown Sender: ';
-        }
-        
-        let msgDateStr = null;
-        if (meta && meta !== '[Unknown Time] Unknown Sender: ') {
-          const match = meta.match(/,\s(.*?)]/);
-          if (match) msgDateStr = match[1];
-        }
-
-        if (msgDateStr && msgDateStr !== targetDateStr) {
-          reachedOlder = true;
-          continue; 
-        }
-
-        const msgIdNode = row.querySelector('[data-id]') || row;
-        const dataId = msgIdNode.getAttribute('data-id');
-        if (!dataId) continue;
-
-        if (extractedMessageIds.has(dataId)) continue; // Already extracted
-
-        let textParts = [];
-
-        // 1. Extract normal text / quoted text
-        const textContainers = Array.from(row.querySelectorAll('.copyable-text')).filter(el => !el.hasAttribute('data-pre-plain-text'));
-        if (textContainers.length > 0) {
-          textParts.push(textContainers[textContainers.length - 1].innerText);
-        } else if (row.querySelector('img')) {
-          textParts.push(`[Image/Media]`);
-        }
-
-        // 2. Extract Voice Message
-        const isVoice = !!(row.querySelector('[data-testid="audio-play"]') || row.querySelector('[data-testid="audio-pause"]') || row.querySelector('[data-testid="audio-download"]'));
-        if (isVoice) {
-          const wvtBtn = row.querySelector('.wvt-btn');
-          if (wvtBtn && wvtBtn.dataset.wvtTranscript) {
-            textParts.push(`[Voice Message Transcript]: ${wvtBtn.dataset.wvtTranscript}`);
-          } else {
-            let stored = null;
-            const audio = row.querySelector('audio');
-            if (audio && audio.src && audio.src.startsWith('blob:')) {
-              try {
-                const res = await chrome.storage.local.get('wvt_ts_' + audio.src);
-                stored = res['wvt_ts_' + audio.src];
-              } catch(e) {}
-            }
-            if (!stored) {
-              try {
-                const res = await chrome.storage.local.get('wvt_ts_' + dataId);
-                stored = res['wvt_ts_' + dataId];
-              } catch(e) {}
-            }
-            
-            if (stored) {
-              textParts.push(`[Voice Message Transcript]: ${stored}`);
-            } else {
-              textParts.push(`[Voice Message - Not Transcribed]`);
-            }
-          }
-        }
-
-        const text = textParts.join('\n');
-        if (meta || text) {
-          extractedMessageIds.add(dataId);
-          chunk.push({ meta: meta, text: text || '' });
+        const pre = rowPrePlainMeta(row);
+        infos.push({ row, dataId: rowDataId(row), pre, date: pre ? pre.date : null });
+        if (pre) {
+          const outgoing = isRowOutgoing(row);
+          senderNames[outgoing ? 'out' : 'in'] = pre.sender;
+          if (!outgoing) incomingNames.add(pre.sender);
         }
       }
-      
+      let lastDate = null;
+      for (const info of infos) {
+        if (info.date) lastDate = info.date;
+        else info.date = lastDate;
+      }
+      let nextDate = null;
+      for (let i = infos.length - 1; i >= 0; i--) {
+        if (infos[i].date) nextDate = infos[i].date;
+        else infos[i].date = nextDate;
+      }
+
+      // Pass 2: extraction.
+      let reachedOlder = false;
+      const chunk = [];
+      for (const info of infos) {
+        const { dataId, pre } = info;
+        let row = info.row;
+        if (!dataId) continue; // date dividers, system rows
+        if (info.date && info.date !== targetDateStr) {
+          reachedOlder = true;
+          continue;
+        }
+        if (extractedMessageIds.has(dataId)) continue;
+
+        // Last-chance expansion if this row is still truncated. Expanding
+        // can re-render the row, so re-locate it by id if it got detached.
+        const rowReadMores = findReadMoreButtons(row);
+        if (rowReadMores.length > 0) {
+          for (const btn of rowReadMores) btn.click();
+          await sleep(350);
+          if (!row.isConnected) {
+            const holder = document.querySelector(
+              `#main [data-id="${CSS.escape(dataId)}"]`
+            );
+            if (!holder) continue; // gone; a later pass may pick it up
+            row = holder.closest('div[role="row"]') || holder;
+          }
+        }
+
+        const outgoing = isRowOutgoing(row);
+        const time = pre ? pre.time : rowTime(row);
+        const date = pre ? pre.date : info.date || targetDateStr;
+        let sender = pre ? pre.sender : null;
+        if (!sender) {
+          if (outgoing) {
+            sender = senderNames.out || 'You';
+          } else if (senderNames.in && incomingNames.size <= 1) {
+            sender = senderNames.in;
+          } else {
+            sender = chatTitle || 'Unknown Sender';
+          }
+        }
+
+        const parts = [];
+        const quoteBox = findQuoteBox(row);
+        if (quoteBox) {
+          const preview = quotePreview(quoteBox);
+          if (preview) parts.push(`[Replying to ${preview}]`);
+        }
+
+        if (isVoiceRow(row, quoteBox)) {
+          // Voice notes carry no caption text of their own; any selectable
+          // text inside the row belongs to the quoted preview.
+          const transcript = await findVoiceTranscript(row, dataId);
+          parts.push(
+            transcript
+              ? `[Voice Message Transcript]: ${transcript}`
+              : '[Voice Message - Not Transcribed]'
+          );
+        } else {
+          const media = mediaLabel(row, quoteBox);
+          if (media) parts.push(media);
+          const textRoot = findMessageTextRoot(row, quoteBox);
+          if (textRoot) {
+            const text = extractRichText(textRoot);
+            if (text) parts.push(text);
+          }
+        }
+
+        extractedMessageIds.add(dataId);
+        if (parts.length > 0) {
+          chunk.push({
+            time: time || null,
+            date,
+            sender,
+            outgoing,
+            text: parts.join('\n'),
+          });
+        }
+      }
+
       if (chunk.length > 0) {
-        allChunks.unshift(chunk); // Prepend older chunk
+        allChunks.unshift(chunk); // prepend: later passes hold older messages
       }
       return reachedOlder;
     }
 
     let prevScrollTop = scrollContainer.scrollTop;
     let stuckCount = 0;
-    
+
     // Extract what's on screen first
     await extractVisible();
 
     // Scroll up loop
     while (true) {
-      scrollContainer.scrollTop -= (scrollContainer.clientHeight * 0.5);
-      await new Promise(r => setTimeout(r, 300)); // wait for DOM to update
-      
+      scrollContainer.scrollTop -= scrollContainer.clientHeight * 0.5;
+      await sleep(300); // wait for DOM to update
+
       const reachedOlder = await extractVisible();
       if (reachedOlder) break;
-      
+
       if (scrollContainer.scrollTop === prevScrollTop || scrollContainer.scrollTop === 0) {
         stuckCount++;
-        if (stuckCount > 3) break; 
+        if (stuckCount > 3) break;
       } else {
         stuckCount = 0;
       }
       prevScrollTop = scrollContainer.scrollTop;
-      
+
       if (extractedMessageIds.size > 5000) break; // safety limit
     }
 
@@ -666,30 +956,45 @@
 
     const finalMessages = allChunks.flat();
     if (finalMessages.length === 0) {
-      alert("No messages extracted.");
+      alert('No messages extracted.');
       return;
     }
+
+    const metaOf = (m) =>
+      m.time ? `[${m.time}, ${m.date}] ${m.sender}: ` : `[${m.date}] ${m.sender}: `;
 
     let output = '';
     let mimeType = 'text/plain';
 
     if (format === 'json') {
-      output = JSON.stringify({
-        exportDate: targetDateStr,
-        messages: finalMessages.map(m => ({ meta: m.meta.trim(), text: m.text }))
-      }, null, 2);
+      output = JSON.stringify(
+        {
+          exportDate: targetDateStr,
+          chat: chatTitle || null,
+          messages: finalMessages.map((m) => ({
+            meta: metaOf(m).trim(),
+            sender: m.sender,
+            time: m.time,
+            date: m.date,
+            fromMe: m.outgoing,
+            text: m.text,
+          })),
+        },
+        null,
+        2
+      );
       mimeType = 'application/json';
     } else if (format === 'csv') {
-      const escapeCsv = (str) => `"${str.replace(/"/g, '""')}"`;
+      const escapeCsv = (str) => `"${String(str).replace(/"/g, '""')}"`;
       output = 'Metadata,Message\n';
       for (const msg of finalMessages) {
-        output += `${escapeCsv(msg.meta.trim())},${escapeCsv(msg.text)}\n`;
+        output += `${escapeCsv(metaOf(msg).trim())},${escapeCsv(msg.text)}\n`;
       }
       mimeType = 'text/csv';
     } else {
       output = `WhatsApp Chat Export - ${targetDateStr}\n\n`;
       for (const msg of finalMessages) {
-        output += `${msg.meta}${msg.text}\n`;
+        output += `${metaOf(msg)}${msg.text}\n`;
       }
     }
 
