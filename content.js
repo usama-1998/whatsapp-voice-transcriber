@@ -529,7 +529,20 @@
     const extractedMessageIds = new Set();
     const allChunks = [];
 
-    function extractVisible() {
+    async function extractVisible() {
+      // Expand any "Read more" buttons
+      const readMores = document.querySelectorAll('#main div[role="row"] div[role="button"]');
+      let clickedAny = false;
+      for (const btn of readMores) {
+        if (btn.innerText && btn.innerText.toLowerCase().includes('read more')) {
+          btn.click();
+          clickedAny = true;
+        }
+      }
+      if (clickedAny) {
+        await new Promise(r => setTimeout(r, 100)); // wait for DOM expansion
+      }
+
       let reachedOlder = false;
       const rows = Array.from(document.querySelectorAll('#main div[role="row"]'));
       const chunk = [];
@@ -537,10 +550,24 @@
       for (const row of rows) {
         let meta = '';
         const copyable = row.querySelector('[data-pre-plain-text]');
-        if (copyable) meta = copyable.getAttribute('data-pre-plain-text');
+        if (copyable) {
+          meta = copyable.getAttribute('data-pre-plain-text');
+        } else {
+          // Traverse up to find the group's metadata
+          let prev = row.previousElementSibling;
+          while (prev) {
+            const prevCopyable = prev.querySelector('[data-pre-plain-text]');
+            if (prevCopyable) {
+              meta = prevCopyable.getAttribute('data-pre-plain-text');
+              break;
+            }
+            prev = prev.previousElementSibling;
+          }
+          if (!meta) meta = '[Unknown Time] Unknown Sender: ';
+        }
         
         let msgDateStr = null;
-        if (meta) {
+        if (meta && meta !== '[Unknown Time] Unknown Sender: ') {
           const match = meta.match(/,\s(.*?)]/);
           if (match) msgDateStr = match[1];
         }
@@ -556,23 +583,50 @@
 
         if (extractedMessageIds.has(dataId)) continue; // Already extracted
 
-        let text = '';
-        const wvtBtn = row.querySelector('.wvt-btn');
-        if (wvtBtn) {
-          const transcript = wvtBtn.dataset.wvtTranscript;
-          text = transcript ? `[Voice Message Transcript]: ${transcript}` : `[Voice Message - Not Transcribed]`;
-        } else {
-          const spans = row.querySelectorAll('span.selectable-text.copyable-text');
-          if (spans.length > 0) {
-            text = spans[spans.length - 1].innerText;
-          } else if (row.querySelector('img')) {
-            text = `[Image/Media]`;
+        let textParts = [];
+
+        // 1. Extract normal text / quoted text
+        const textContainers = Array.from(row.querySelectorAll('.copyable-text')).filter(el => !el.hasAttribute('data-pre-plain-text'));
+        if (textContainers.length > 0) {
+          textParts.push(textContainers[textContainers.length - 1].innerText);
+        } else if (row.querySelector('img')) {
+          textParts.push(`[Image/Media]`);
+        }
+
+        // 2. Extract Voice Message
+        const isVoice = !!(row.querySelector('[data-testid="audio-play"]') || row.querySelector('[data-testid="audio-pause"]') || row.querySelector('[data-testid="audio-download"]'));
+        if (isVoice) {
+          const wvtBtn = row.querySelector('.wvt-btn');
+          if (wvtBtn && wvtBtn.dataset.wvtTranscript) {
+            textParts.push(`[Voice Message Transcript]: ${wvtBtn.dataset.wvtTranscript}`);
+          } else {
+            let stored = null;
+            const audio = row.querySelector('audio');
+            if (audio && audio.src && audio.src.startsWith('blob:')) {
+              try {
+                const res = await chrome.storage.local.get('wvt_ts_' + audio.src);
+                stored = res['wvt_ts_' + audio.src];
+              } catch(e) {}
+            }
+            if (!stored) {
+              try {
+                const res = await chrome.storage.local.get('wvt_ts_' + dataId);
+                stored = res['wvt_ts_' + dataId];
+              } catch(e) {}
+            }
+            
+            if (stored) {
+              textParts.push(`[Voice Message Transcript]: ${stored}`);
+            } else {
+              textParts.push(`[Voice Message - Not Transcribed]`);
+            }
           }
         }
 
+        const text = textParts.join('\n');
         if (meta || text) {
           extractedMessageIds.add(dataId);
-          chunk.push({ meta: meta || '[Unknown Time] Unknown Sender: ', text: text || '' });
+          chunk.push({ meta: meta, text: text || '' });
         }
       }
       
@@ -586,14 +640,14 @@
     let stuckCount = 0;
     
     // Extract what's on screen first
-    extractVisible();
+    await extractVisible();
 
     // Scroll up loop
     while (true) {
       scrollContainer.scrollTop -= (scrollContainer.clientHeight * 0.5);
       await new Promise(r => setTimeout(r, 300)); // wait for DOM to update
       
-      const reachedOlder = extractVisible();
+      const reachedOlder = await extractVisible();
       if (reachedOlder) break;
       
       if (scrollContainer.scrollTop === prevScrollTop || scrollContainer.scrollTop === 0) {
