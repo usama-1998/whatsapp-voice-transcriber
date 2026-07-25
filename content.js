@@ -32,6 +32,38 @@
   let captureInFlight = false;
   let isInitialized = false; // Prevents auto-transcribing historical messages on load
 
+  const ENABLED_CHATS_KEY = 'wvt_enabled_chats';
+  let enabledChats = new Set();
+
+  // Load enabled chats from storage on startup
+  chrome.storage.local.get(ENABLED_CHATS_KEY).then(data => {
+    if (data[ENABLED_CHATS_KEY]) {
+      enabledChats = new Set(data[ENABLED_CHATS_KEY]);
+      log('Loaded enabled chats:', [...enabledChats]);
+    }
+  }).catch(() => {});
+
+  function saveEnabledChats() {
+    chrome.storage.local.set({ [ENABLED_CHATS_KEY]: [...enabledChats] }).catch(() => {});
+  }
+
+  function getActiveChatId() {
+    // WhatsApp stores the chat id in the header or conversation panel
+    const header = document.querySelector('#main header');
+    if (!header) return null;
+    // Try to get the chat title text as a stable identifier
+    const titleSpan = header.querySelector('span[dir="auto"][title]');
+    if (titleSpan) return titleSpan.getAttribute('title');
+    const titleText = header.querySelector('span[dir="auto"]');
+    if (titleText) return titleText.textContent.trim();
+    return null;
+  }
+
+  function isChatEnabled() {
+    const chatId = getActiveChatId();
+    return chatId && enabledChats.has(chatId);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   function findMessageBubble(el) {
@@ -389,6 +421,16 @@
   async function attachToVoiceMessage(control) {
     const bubble = findMessageBubble(control);
     if (!bubble || bubble.dataset.wvtAttached) return;
+    
+    // Ignore the user's own outgoing voice messages
+    if (isOutgoingMessage(bubble, control)) {
+      bubble.dataset.wvtAttached = '1';
+      return;
+    }
+
+    // Only attach if transcription is enabled for this chat
+    if (!isChatEnabled()) return;
+    
     bubble.dataset.wvtAttached = '1';
     attachedCount++;
 
@@ -438,6 +480,240 @@
     }
   }
 
+  // --------------------------------------------------------------- exporting
+
+  function getScrollContainer() {
+    const firstRow = document.querySelector('#main div[role="row"]');
+    if (!firstRow) return null;
+    let el = firstRow.parentElement;
+    while (el && el !== document.body) {
+      const style = window.getComputedStyle(el);
+      if (style.overflowY === 'scroll' || style.overflowY === 'auto') {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return firstRow.parentElement;
+  }
+
+  async function handleExportChat(format = 'txt') {
+    const scrollContainer = getScrollContainer();
+    if (!scrollContainer) {
+      alert("Could not find scroll container.");
+      return;
+    }
+
+    const initialRows = Array.from(document.querySelectorAll('#main div[role="row"]'));
+    if (initialRows.length === 0) {
+      alert("No messages found.");
+      return;
+    }
+    
+    let targetDateStr = null;
+    for (let i = initialRows.length - 1; i >= 0; i--) {
+      const copyable = initialRows[i].querySelector('[data-pre-plain-text]');
+      if (copyable) {
+        const match = copyable.getAttribute('data-pre-plain-text').match(/,\s(.*?)]/);
+        if (match) {
+          targetDateStr = match[1];
+          break;
+        }
+      }
+    }
+
+    if (!targetDateStr) {
+      alert("Could not determine today's date from visible messages.");
+      return;
+    }
+
+    const extractedMessageIds = new Set();
+    const allChunks = [];
+
+    function extractVisible() {
+      let reachedOlder = false;
+      const rows = Array.from(document.querySelectorAll('#main div[role="row"]'));
+      const chunk = [];
+      
+      for (const row of rows) {
+        let meta = '';
+        const copyable = row.querySelector('[data-pre-plain-text]');
+        if (copyable) meta = copyable.getAttribute('data-pre-plain-text');
+        
+        let msgDateStr = null;
+        if (meta) {
+          const match = meta.match(/,\s(.*?)]/);
+          if (match) msgDateStr = match[1];
+        }
+
+        if (msgDateStr && msgDateStr !== targetDateStr) {
+          reachedOlder = true;
+          continue; 
+        }
+
+        const msgIdNode = row.querySelector('[data-id]') || row;
+        const dataId = msgIdNode.getAttribute('data-id');
+        if (!dataId) continue;
+
+        if (extractedMessageIds.has(dataId)) continue; // Already extracted
+
+        let text = '';
+        const wvtBtn = row.querySelector('.wvt-btn');
+        if (wvtBtn) {
+          const transcript = wvtBtn.dataset.wvtTranscript;
+          text = transcript ? `[Voice Message Transcript]: ${transcript}` : `[Voice Message - Not Transcribed]`;
+        } else {
+          const spans = row.querySelectorAll('span.selectable-text.copyable-text');
+          if (spans.length > 0) {
+            text = spans[spans.length - 1].innerText;
+          } else if (row.querySelector('img')) {
+            text = `[Image/Media]`;
+          }
+        }
+
+        if (meta || text) {
+          extractedMessageIds.add(dataId);
+          chunk.push({ meta: meta || '[Unknown Time] Unknown Sender: ', text: text || '' });
+        }
+      }
+      
+      if (chunk.length > 0) {
+        allChunks.unshift(chunk); // Prepend older chunk
+      }
+      return reachedOlder;
+    }
+
+    let prevScrollTop = scrollContainer.scrollTop;
+    let stuckCount = 0;
+    
+    // Extract what's on screen first
+    extractVisible();
+
+    // Scroll up loop
+    while (true) {
+      scrollContainer.scrollTop -= (scrollContainer.clientHeight * 0.5);
+      await new Promise(r => setTimeout(r, 300)); // wait for DOM to update
+      
+      const reachedOlder = extractVisible();
+      if (reachedOlder) break;
+      
+      if (scrollContainer.scrollTop === prevScrollTop || scrollContainer.scrollTop === 0) {
+        stuckCount++;
+        if (stuckCount > 3) break; 
+      } else {
+        stuckCount = 0;
+      }
+      prevScrollTop = scrollContainer.scrollTop;
+      
+      if (extractedMessageIds.size > 5000) break; // safety limit
+    }
+
+    // Scroll back to bottom for user convenience
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+
+    const finalMessages = allChunks.flat();
+    if (finalMessages.length === 0) {
+      alert("No messages extracted.");
+      return;
+    }
+
+    let output = '';
+    let mimeType = 'text/plain';
+
+    if (format === 'json') {
+      output = JSON.stringify({
+        exportDate: targetDateStr,
+        messages: finalMessages.map(m => ({ meta: m.meta.trim(), text: m.text }))
+      }, null, 2);
+      mimeType = 'application/json';
+    } else if (format === 'csv') {
+      const escapeCsv = (str) => `"${str.replace(/"/g, '""')}"`;
+      output = 'Metadata,Message\n';
+      for (const msg of finalMessages) {
+        output += `${escapeCsv(msg.meta.trim())},${escapeCsv(msg.text)}\n`;
+      }
+      mimeType = 'text/csv';
+    } else {
+      output = `WhatsApp Chat Export - ${targetDateStr}\n\n`;
+      for (const msg of finalMessages) {
+        output += `${msg.meta}${msg.text}\n`;
+      }
+    }
+
+    const blob = new Blob([output], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `WhatsApp_Export_${targetDateStr.replace(/\//g, '-')}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // --------------------------------------------------------- chat toggle
+
+  const TOGGLE_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M7 5H3"/></svg>';
+
+  function updateToggleLabel(btn, enabled) {
+    btn.innerHTML = TOGGLE_SVG + '<span>' + (enabled ? 'Transcribe ON' : 'Transcribe OFF') + '</span>';
+    btn.title = enabled ? 'Click to disable voice transcription for this chat' : 'Click to enable voice transcription for this chat';
+    btn.classList.toggle('wvt-toggle-on', enabled);
+    btn.classList.toggle('wvt-toggle-off', !enabled);
+  }
+
+  function injectChatToggle() {
+    const header = document.querySelector('#main header');
+    if (!header) return;
+
+    // Remove stale toggle if the chat changed
+    const existing = header.querySelector('.wvt-chat-toggle');
+    const chatId = getActiveChatId();
+    if (existing && existing.dataset.wvtChatId !== chatId) {
+      existing.remove();
+    }
+    if (header.querySelector('.wvt-chat-toggle')) return; // already injected for this chat
+    if (!chatId) return;
+
+    const enabled = enabledChats.has(chatId);
+
+    const btn = document.createElement('button');
+    btn.className = 'wvt-chat-toggle';
+    btn.dataset.wvtChatId = chatId;
+    btn.type = 'button';
+    updateToggleLabel(btn, enabled);
+
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.wvtChatId;
+      if (enabledChats.has(id)) {
+        enabledChats.delete(id);
+        updateToggleLabel(btn, false);
+        log('Transcription disabled for:', id);
+      } else {
+        enabledChats.add(id);
+        updateToggleLabel(btn, true);
+        log('Transcription enabled for:', id);
+        // Reset attached flags so voice messages get picked up on next scan
+        for (const bubble of document.querySelectorAll('[data-wvt-attached]')) {
+          if (!bubble.querySelector('.wvt-btn')) {
+            delete bubble.dataset.wvtAttached;
+          }
+        }
+      }
+      saveEnabledChats();
+    });
+
+    // Insert right after the contact name / title area
+    const titleContainer = header.querySelector('div[role="button"]') || header.firstElementChild;
+    if (titleContainer && titleContainer.parentElement === header) {
+      titleContainer.after(btn);
+    } else {
+      header.appendChild(btn);
+    }
+  }
+
+  // --------------------------------------------------------------- scanning
+
   function scan() {
     // WhatsApp re-renders parts of message rows (e.g. when playback state
     // changes), which can destroy our injected UI while the bubble keeps its
@@ -447,6 +723,8 @@
         delete bubble.dataset.wvtAttached;
       }
     }
+
+    injectChatToggle();
 
     const before = attachedCount;
     for (const control of findVoiceControls(document)) {
@@ -461,6 +739,12 @@
 
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.target !== 'content') return;
+    
+    if (message.type === 'export_chat_today') {
+      handleExportChat(message.format || 'txt');
+      return;
+    }
+
     const entry = pending.get(message.requestId);
     if (!entry) return;
 

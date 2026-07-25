@@ -282,3 +282,53 @@ body.dark .wvt-modal-footer,
 .dark .wvt-modal-footer {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
+
+/* ===================================================================
+   PER-CHAT TOGGLE BUTTON (in chat header)
+   =================================================================== */
+
+.wvt-chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 16px;
+  cursor: pointer;
+  flex: none;
+  transition: all 0.25s ease;
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: 0.3px;
+  line-height: 1;
+}
+
+.wvt-chat-toggle span {
+  pointer-events: none;
+}
+
+/* Enabled state: green pill */
+.wvt-chat-toggle.wvt-toggle-on {
+  background: rgba(0, 168, 132, 0.2);
+  color: #00a884;
+}
+.wvt-chat-toggle.wvt-toggle-on:hover {
+  background: rgba(0, 168, 132, 0.35);
+  transform: scale(1.05);
+}
+
+/* Disabled state: muted pill */
+.wvt-chat-toggle.wvt-toggle-off {
+  background: rgba(134, 150, 160, 0.12);
+  color: #8696a0;
+}
+.wvt-chat-toggle.wvt-toggle-off:hover {
+  background: rgba(134, 150, 160, 0.25);
+  transform: scale(1.05);
+}
+
+.wvt-chat-toggle:active {
+  transform: scale(0.95);
+}

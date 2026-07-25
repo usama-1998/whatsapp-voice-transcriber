@@ -59,7 +59,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     return;
   }
 
-  // Offscreen -> content script: progress updates and results
+// Offscreen -> content script: progress updates and results
   if (message.target === 'content' && message.tabId != null) {
     chrome.tabs.sendMessage(message.tabId, message).catch(() => {
       // Tab was closed or navigated away; nothing to do.

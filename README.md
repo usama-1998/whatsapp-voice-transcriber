@@ -14,6 +14,10 @@ runtime compiled to WebAssembly).
   auto-detected).
 - Transcripts are cached locally, so a message you already transcribed shows its
   text again instantly after a page reload.
+- **Auto-Transcription:** New incoming voice messages are transcribed automatically as they arrive.
+- **Per-Chat Toggle:** Enable or disable transcription on a per-chat basis using the button in the chat header.
+- **Export Transcripts:** Export your entire chat history for the day (including transcripts) to TXT, CSV, or JSON via the extension popup menu.
+- **Focus Mode:** Your own outgoing voice messages are intentionally ignored to keep the chat clean.
 
 ## Installation
 
@@ -25,12 +29,18 @@ runtime compiled to WebAssembly).
 
 ## Usage
 
+### Transcribing Messages
 1. Open a chat that contains a voice message.
-2. A magical **AI sparkles** icon appears right next to the voice message player controls.
-3. Click it. The first time ever, the extension downloads the Whisper model
-   (~250 MB, one time only — it is cached by the browser afterwards).
-4. The transcript opens in a premium modal overlay, making it easy to read.
-5. You can also easily copy the transcript using the **Copy to Clipboard** button in the modal.
+2. By default, transcription is disabled for new chats. Click the **✨ Transcribe OFF** pill button in the chat header (next to the contact name) to enable it.
+3. Once enabled, the extension will automatically pick up and transcribe any new incoming voice messages.
+4. For older messages, a magical **AI sparkles** icon appears right next to the voice message player controls. Click it to manually transcribe.
+5. The first time ever, the extension downloads the Whisper model (~250 MB, one time only — it is cached by the browser afterwards).
+6. The transcript opens in a premium modal overlay, making it easy to read.
+
+### Exporting Chats
+1. Click the extension icon in your Chrome toolbar.
+2. Select your desired export format (**TXT**, **CSV**, or **JSON**).
+3. Click **Export Today's Chat**. The extension will automatically scroll through your active chat and package all visible messages and stored voice transcripts into a download.
 
 Notes:
 
