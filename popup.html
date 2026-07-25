@@ -80,15 +80,22 @@
     </svg>
     Export Chat
   </h3>
-  <p>Export the active chat's messages for today, including local voice transcriptions.</p>
-  
+  <p>Export the active chat's messages, including local voice transcriptions.</p>
+
+  <label for="duration">Duration:</label>
+  <select id="duration">
+    <option value="1">Today</option>
+    <option value="3">Last 3 Days</option>
+    <option value="7">Last 7 Days</option>
+  </select>
+
   <label for="format">Format:</label>
   <select id="format">
     <option value="txt">Plain Text (.txt)</option>
     <option value="csv">Spreadsheet (.csv)</option>
     <option value="json">Raw Data (.json)</option>
   </select>
-  
+
   <button id="export-btn">Export Today's Chat</button>
   <div id="error-msg" class="error">Please open a WhatsApp Web chat first.</div>
 

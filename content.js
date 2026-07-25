@@ -8,7 +8,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
 
   const log = (...args) =>
     console.log('%c[Voice Transcriber]', 'color:#00a884;font-weight:bold', ...args);
@@ -502,6 +502,28 @@
   const TIME_TEXT_RE = /^\d{1,2}:\d{2}(\s?[APap]\.?\s?[Mm]\.?)?$/;
   const TIME_IN_TEXT_RE = /\d{1,2}:\d{2}(\s?[APap]\.?\s?[Mm]\.?)?/;
 
+  const MAX_EXPORT_DAYS = 7;
+
+  // WhatsApp always renders message metadata with a concrete "M/D/YYYY" date
+  // (relative labels like "Yesterday" only appear in the chat list, never in
+  // data-pre-plain-text). Chrome's Date constructor parses that slash format
+  // as month/day/year, matching what produced the string.
+  function parseWhatsAppDate(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function startOfDay(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
+  // Re-render a Date using WhatsApp's own (unpadded) M/D/YYYY convention, so
+  // a computed range-start date reads consistently with the anchor date.
+  function formatSlashDate(date) {
+    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  }
+
   function rowDataId(row) {
     if (row.hasAttribute('data-id')) return row.getAttribute('data-id');
     const holder = row.querySelector('[data-id]');
@@ -774,7 +796,9 @@
     return null;
   }
 
-  async function handleExportChat(format = 'txt') {
+  async function handleExportChat(format = 'txt', days = 1) {
+    const rangeDays = Math.min(Math.max(parseInt(days, 10) || 1, 1), MAX_EXPORT_DAYS);
+
     const scrollContainer = getScrollContainer();
     if (!scrollContainer) {
       alert('Could not find scroll container.');
@@ -787,18 +811,41 @@
       return;
     }
 
-    let targetDateStr = null;
+    // The export always anchors on the most recent day found in the chat
+    // (not today's real-world date), so it still works when reviewing a
+    // chat that's been quiet for a while.
+    let anchorDateStr = null;
     for (let i = initialRows.length - 1; i >= 0; i--) {
       const meta = rowPrePlainMeta(initialRows[i]);
       if (meta) {
-        targetDateStr = meta.date;
+        anchorDateStr = meta.date;
         break;
       }
     }
 
-    if (!targetDateStr) {
-      alert("Could not determine today's date from visible messages.");
+    if (!anchorDateStr) {
+      alert("Could not determine the chat's most recent date from visible messages.");
       return;
+    }
+
+    const anchorDate = parseWhatsAppDate(anchorDateStr);
+    let cutoffDate = null;
+    if (anchorDate && rangeDays > 1) {
+      cutoffDate = startOfDay(anchorDate);
+      cutoffDate.setDate(cutoffDate.getDate() - (rangeDays - 1));
+    }
+    const rangeStartLabel = cutoffDate ? formatSlashDate(cutoffDate) : null;
+
+    // A row's date is outside the export range once it falls before the
+    // cutoff. If the anchor date couldn't be parsed (unexpected format), or
+    // no range was requested, fall back to matching the anchor date exactly
+    // (the original single-day behavior).
+    function isOutsideRange(dateStr) {
+      if (dateStr === anchorDateStr) return false;
+      if (!cutoffDate) return true;
+      const d = parseWhatsAppDate(dateStr);
+      if (!d) return true;
+      return startOfDay(d) < cutoffDate;
     }
 
     const extractedMessageIds = new Set();
@@ -847,7 +894,7 @@
         const { dataId, pre } = info;
         let row = info.row;
         if (!dataId) continue; // date dividers, system rows
-        if (info.date && info.date !== targetDateStr) {
+        if (info.date && isOutsideRange(info.date)) {
           reachedOlder = true;
           continue;
         }
@@ -870,7 +917,7 @@
 
         const outgoing = isRowOutgoing(row);
         const time = pre ? pre.time : rowTime(row);
-        const date = pre ? pre.date : info.date || targetDateStr;
+        const date = pre ? pre.date : info.date || anchorDateStr;
         let sender = pre ? pre.sender : null;
         if (!sender) {
           if (outgoing) {
@@ -956,12 +1003,16 @@
 
     const finalMessages = allChunks.flat();
     if (finalMessages.length === 0) {
-      alert('No messages extracted.');
+      alert('No messages found in the selected date range.');
       return;
     }
 
     const metaOf = (m) =>
       m.time ? `[${m.time}, ${m.date}] ${m.sender}: ` : `[${m.date}] ${m.sender}: `;
+    const rangeLabel =
+      rangeStartLabel && rangeStartLabel !== anchorDateStr
+        ? `${rangeStartLabel} to ${anchorDateStr}`
+        : anchorDateStr;
 
     let output = '';
     let mimeType = 'text/plain';
@@ -969,7 +1020,9 @@
     if (format === 'json') {
       output = JSON.stringify(
         {
-          exportDate: targetDateStr,
+          startDate: rangeStartLabel || anchorDateStr,
+          endDate: anchorDateStr,
+          rangeDays,
           chat: chatTitle || null,
           messages: finalMessages.map((m) => ({
             meta: metaOf(m).trim(),
@@ -992,7 +1045,7 @@
       }
       mimeType = 'text/csv';
     } else {
-      output = `WhatsApp Chat Export - ${targetDateStr}\n\n`;
+      output = `WhatsApp Chat Export - ${rangeLabel}\n\n`;
       for (const msg of finalMessages) {
         output += `${metaOf(msg)}${msg.text}\n`;
       }
@@ -1002,7 +1055,11 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `WhatsApp_Export_${targetDateStr.replace(/\//g, '-')}.${format}`;
+    const filenameDate =
+      rangeStartLabel && rangeStartLabel !== anchorDateStr
+        ? `${rangeStartLabel.replace(/\//g, '-')}_to_${anchorDateStr.replace(/\//g, '-')}`
+        : anchorDateStr.replace(/\//g, '-');
+    a.download = `WhatsApp_Export_${filenameDate}.${format}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1099,8 +1156,8 @@
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.target !== 'content') return;
     
-    if (message.type === 'export_chat_today') {
-      handleExportChat(message.format || 'txt');
+    if (message.type === 'export_chat') {
+      handleExportChat(message.format || 'txt', message.days || 1);
       return;
     }
 
