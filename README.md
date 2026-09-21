@@ -16,7 +16,7 @@ runtime compiled to WebAssembly).
   text again instantly after a page reload.
 - **Auto-Transcription:** New incoming voice messages are transcribed automatically as they arrive.
 - **Per-Chat Toggle:** Enable or disable transcription on a per-chat basis using the button in the chat header.
-- **Export Transcripts:** Export your chat history (including transcripts) for **Today**, the **Last 3 Days**, or the **Last 7 Days** to TXT, CSV, or JSON via the extension popup menu.
+- **Export Transcripts:** Export your chat history (including transcripts) for **Today**, **Yesterday**, the **Last 3 Days**, **Last 7 Days**, or the **Entire Chat** to TXT, CSV, or JSON via the extension popup menu.
 - **Focus Mode:** Your own outgoing voice messages are intentionally ignored to keep the chat clean.
 
 ## Installation
@@ -39,7 +39,7 @@ runtime compiled to WebAssembly).
 
 ### Exporting Chats
 1. Click the extension icon in your Chrome toolbar.
-2. Select the **Duration** (**Today**, **Last 3 Days**, or **Last 7 Days** — one week is the maximum).
+2. Select the **Duration** (**Today**, **Yesterday**, **Last 3 Days**, **Last 7 Days**, or **Entire Chat**).
 3. Select your desired export format (**TXT**, **CSV**, or **JSON**).
 4. Click **Export**. The extension will automatically scroll through your active chat and package all messages and stored voice transcripts in that range into a download.
 

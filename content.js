@@ -838,8 +838,22 @@
     return null;
   }
 
-  async function handleExportChat(format = 'txt', days = 1) {
-    const rangeDays = Math.min(Math.max(parseInt(days, 10) || 1, 1), MAX_EXPORT_DAYS);
+  async function handleExportChat(format = 'txt', days = 'today') {
+    let rangeDays = 1;
+    let exactlyYesterday = false;
+    let entireChat = false;
+    
+    if (days === 'all') {
+      entireChat = true;
+      rangeDays = Infinity;
+    } else if (days === 'yesterday') {
+      rangeDays = 2; // We need to scan back 2 days to reach yesterday
+      exactlyYesterday = true;
+    } else if (days === 'today' || !days) {
+      rangeDays = 1;
+    } else {
+      rangeDays = Math.min(Math.max(parseInt(days, 10) || 1, 1), MAX_EXPORT_DAYS);
+    }
 
     const scrollContainer = getScrollContainer();
     if (!scrollContainer) {
@@ -883,27 +897,39 @@
     const dayFirst = detectDayFirst(dateSamples);
     const anchorDate = parseWhatsAppDate(anchorDateStr, dayFirst);
     let cutoffDate = null;
-    if (anchorDate && rangeDays > 1) {
+    let maxDate = null; // Used if we want exactly yesterday
+    if (anchorDate && rangeDays > 1 && !entireChat) {
       cutoffDate = startOfDay(anchorDate);
       cutoffDate.setDate(cutoffDate.getDate() - (rangeDays - 1));
+      if (exactlyYesterday) {
+        // If exactly yesterday, maxDate is also yesterday.
+        maxDate = new Date(cutoffDate);
+      }
     }
+    
+    // Fallback if anchorDate failed to parse
     const rangeStartLabel = cutoffDate
       ? formatWhatsAppDate(cutoffDate, anchorDateStr, dayFirst)
       : null;
-    // Days the export actually covers (1 when the anchor date couldn't be
-    // parsed and the range degraded to exact-date matching).
-    const effectiveDays = cutoffDate ? rangeDays : 1;
+    const effectiveDays = cutoffDate ? (exactlyYesterday ? 1 : rangeDays) : 1;
 
-    // A row's date is outside the export range once it falls before the
-    // cutoff. If the anchor date couldn't be parsed (unexpected format), or
-    // no range was requested, fall back to matching the anchor date exactly
-    // (the original single-day behavior).
-    function isOutsideRange(dateStr) {
+    // Returns true if the date is strictly older than the cutoff date
+    function isOlderThanRange(dateStr) {
+      if (entireChat) return false;
       if (dateStr === anchorDateStr) return false;
-      if (!cutoffDate) return true;
+      if (!cutoffDate) return true; // If no cutoff, anything not anchor is older
       const d = parseWhatsAppDate(dateStr, dayFirst);
       if (!d) return true;
       return startOfDay(d) < cutoffDate;
+    }
+
+    // Returns true if the date is strictly newer than the max date (e.g. today when targeting yesterday)
+    function isNewerThanRange(dateStr) {
+      if (!maxDate) return false;
+      if (dateStr === anchorDateStr && exactlyYesterday) return true; // Anchor is today
+      const d = parseWhatsAppDate(dateStr, dayFirst);
+      if (!d) return false;
+      return startOfDay(d) > maxDate;
     }
 
     const extractedMessageIds = new Set();
@@ -957,10 +983,17 @@
         let row = info.row;
         if (!dataId) continue; // date dividers, system rows
         if (info.provisional && !finalPass) continue; // date not trustworthy yet
-        if (info.date && isOutsideRange(info.date)) {
-          reachedOlder = true;
-          continue;
+        
+        if (info.date) {
+          if (isOlderThanRange(info.date)) {
+            reachedOlder = true;
+            continue;
+          }
+          if (isNewerThanRange(info.date)) {
+            continue;
+          }
         }
+        
         if (extractedMessageIds.has(dataId)) continue;
 
         // Last-chance expansion if this row is still truncated. Expanding
@@ -1062,7 +1095,7 @@
       }
       prevScrollTop = scrollContainer.scrollTop;
 
-      if (extractedMessageIds.size > 5000) break; // safety limit
+      if (extractedMessageIds.size > (entireChat ? 50000 : 5000)) break; // safety limit
     }
 
     // Final pass: pick up rows whose dates were provisional (no dated row
@@ -1082,9 +1115,9 @@
     const metaOf = (m) =>
       m.time ? `[${m.time}, ${m.date}] ${m.sender}: ` : `[${m.date}] ${m.sender}: `;
     const rangeLabel =
-      rangeStartLabel && rangeStartLabel !== anchorDateStr
+      entireChat ? 'Entire Chat' : (rangeStartLabel && rangeStartLabel !== anchorDateStr
         ? `${rangeStartLabel} to ${anchorDateStr}`
-        : anchorDateStr;
+        : anchorDateStr);
 
     let output = '';
     let mimeType = 'text/plain';
@@ -1092,9 +1125,9 @@
     if (format === 'json') {
       output = JSON.stringify(
         {
-          startDate: rangeStartLabel || anchorDateStr,
+          startDate: entireChat ? 'Beginning of chat' : (rangeStartLabel || anchorDateStr),
           endDate: anchorDateStr,
-          rangeDays: effectiveDays,
+          rangeDays: entireChat ? 'all' : effectiveDays,
           chat: chatTitle || null,
           messages: finalMessages.map((m) => ({
             meta: metaOf(m).trim(),

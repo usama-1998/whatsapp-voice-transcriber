@@ -1,11 +1,11 @@
 const durationSelect = document.getElementById('duration');
 const exportBtn = document.getElementById('export-btn');
 
-const DURATION_LABELS = { 1: "Export Today's Chat", 3: 'Export Last 3 Days', 7: 'Export Last 7 Days' };
+const DURATION_LABELS = { 'today': "Export Today's Chat", 'yesterday': "Export Yesterday's Chat", '3': 'Export Last 3 Days', '7': 'Export Last 7 Days', 'all': 'Export Entire Chat' };
 
 function labelForDuration() {
-  const days = parseInt(durationSelect.value, 10);
-  return DURATION_LABELS[days] || `Export Last ${days} Days`;
+  const val = durationSelect.value;
+  return DURATION_LABELS[val] || `Export Last ${val} Days`;
 }
 
 function resetButtonLabel() {
@@ -17,7 +17,7 @@ resetButtonLabel(); // sync label if the browser restored a non-default selectio
 
 exportBtn.addEventListener('click', async () => {
   const format = document.getElementById('format').value;
-  const days = parseInt(durationSelect.value, 10) || 1;
+  const days = durationSelect.value;
   const errorMsg = document.getElementById('error-msg');
 
   errorMsg.style.display = 'none';
